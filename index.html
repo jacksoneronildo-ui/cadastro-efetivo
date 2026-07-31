@@ -108,17 +108,23 @@ let saveErrorMsg = '';
 const GAS_URL = "https://script.google.com/macros/s/AKfycbz0O6hEtx7ShiwEt0szZJekmUedG1abaiDsn0rfvZ_KDjf3R082Z9TSnKn1qbdhvWGN/exec";
 
 async function storageGet(key){
+  let serverResponded = false;
   try{
     const res = await fetch(GAS_URL + '?key=' + encodeURIComponent(key), { method: 'GET' });
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
+    serverResponded = true;
     if(data && data.value !== null && data.value !== undefined){
       try{ localStorage.setItem('efetivo_cache_' + key, data.value); }catch(e){}
       return { key, value: data.value };
     }
-    throw new Error('not found remotely');
+    // o servidor respondeu e confirmou que não há dado para essa chave:
+    // essa é a resposta correta e definitiva — descarta qualquer cache antigo local
+    try{ localStorage.removeItem('efetivo_cache_' + key); }catch(e){}
+    throw new Error('not found');
   }catch(e){
-    // sem internet ou planilha indisponível: usa a última cópia salva neste aparelho
+    if(serverResponded) throw e; // servidor respondeu de verdade: não usar cache velho
+    // sem internet ou planilha indisponível (falha de rede real): usa a última cópia salva neste aparelho
     const cached = localStorage.getItem('efetivo_cache_' + key);
     if(cached !== null) return { key, value: cached };
     throw new Error('not found');
