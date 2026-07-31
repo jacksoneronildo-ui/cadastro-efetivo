@@ -40,8 +40,8 @@
   .btn-block{width:100%;}
   .efetivo-row{background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px; margin-bottom:8px; position:relative;}
   .rm{position:absolute; top:8px; right:8px; background:none; border:none; color:var(--muted); cursor:pointer; font-size:16px;}
-  .tabs{display:flex; gap:8px; margin-bottom:16px;}
-  .tab{flex:1; text-align:center; padding:9px; border-radius:8px; background:var(--surface2); color:var(--muted); font-family:'Oswald',sans-serif; font-size:13px; cursor:pointer; border:1px solid var(--border);}
+  .tabs{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:16px;}
+  .tab{text-align:center; padding:9px 4px; border-radius:8px; background:var(--surface2); color:var(--muted); font-family:'Oswald',sans-serif; font-size:11.5px; line-height:1.2; cursor:pointer; border:1px solid var(--border);}
   .tab.active{background:var(--accent); color:#181205; border-color:var(--accent);}
   .section-title{font-family:'Oswald',sans-serif; font-size:16px; margin-bottom:10px;}
   .muted{color:var(--muted); font-size:12.5px;}
@@ -70,12 +70,16 @@
   <div id="saveBanner"></div>
 
   <div class="tabs">
-    <div class="tab active" id="tabNew" onclick="switchTab('new')">Novo lançamento</div>
-    <div class="tab" id="tabDay" onclick="switchTab('day')">Lançamentos do dia</div>
+    <div class="tab active" id="tabNew" onclick="switchTab('new')">Lançamento diário</div>
+    <div class="tab" id="tabNewEvento" onclick="switchTab('newEvento')">Lan. em Evento/ Operação</div>
+    <div class="tab" id="tabDay" onclick="switchTab('day')">Relatório de serviços diários</div>
+    <div class="tab" id="tabDayEvento" onclick="switchTab('dayEvento')">Relatório de Evento/ Operação</div>
   </div>
 
   <div id="viewNew"></div>
+  <div id="viewNewEvento" class="hidden"></div>
   <div id="viewDay" class="hidden"></div>
+  <div id="viewDayEvento" class="hidden"></div>
 </div>
 
 <div id="modalRoot"></div>
@@ -91,7 +95,11 @@ function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(
 const MOTTO = "9ª CIPM: TRABALHO, FORÇA E DEDICAÇÃO";
 let lastHeader = { gt:"", cidade:"", codigo:"" };
 let launches = [];
-let dailyCommand = {}; // { 'YYYY-MM-DD': { comando, subcomando, oficialOperacoes } }
+let dailyCommandCurrent = {}; // { comando, subcomando, oficialOperacoes } — referente à selectedDate
+let activeBucketType = 'daily'; // 'daily' | 'evento' — bucket atualmente carregado em `launches`
+let selectedEventDate = todayISO(); // data selecionada na aba de relatório de evento/operação
+let eventIndex = []; // lista de nomes de eventos/operações já usados (sugestão no cadastro)
+let efetivoRowsEvento = [];
 let currentTab = 'new';
 let selectedDate = todayISO();
 let efetivoRows = [];
@@ -130,24 +138,69 @@ async function storageSet(key, value){
 }
 
 async function loadAll(){
-  try{
-    const c = await storageGet('efetivo-daily-command');
-    if(c && c.value) dailyCommand = JSON.parse(c.value);
-  }catch(e){}
-  try{
-    const l = await storageGet('efetivo-launches');
-    if(l && l.value) launches = JSON.parse(l.value);
-  }catch(e){}
+  await loadDateData(selectedDate);
+  await loadEventIndex();
   renderHeader();
   resetNewForm();
   renderDayView();
 }
 
+function launchesKey(date){ return 'launches:' + date; }
+function commandKey(date){ return 'daily-command:' + date; }
+function eventLaunchesKey(date){ return 'event-launches:' + date; }
+
+function activeBucketKey(){
+  return activeBucketType === 'daily' ? launchesKey(selectedDate) : eventLaunchesKey(selectedEventDate);
+}
+
+async function loadDateData(date, withCommand = true){
+  activeBucketType = 'daily';
+  selectedDate = date;
+  const jobs = [
+    storageGet(launchesKey(date)).then(l => { launches = (l && l.value) ? JSON.parse(l.value) : []; }).catch(() => { launches = []; })
+  ];
+  if(withCommand){
+    jobs.push(
+      storageGet(commandKey(date)).then(c => { dailyCommandCurrent = (c && c.value) ? JSON.parse(c.value) : {}; }).catch(() => { dailyCommandCurrent = {}; })
+    );
+  }
+  await Promise.all(jobs);
+}
+
+async function loadEventoData(date, withCommand = true){
+  activeBucketType = 'evento';
+  selectedEventDate = date;
+  const jobs = [
+    storageGet(eventLaunchesKey(date)).then(l => { launches = (l && l.value) ? JSON.parse(l.value) : []; }).catch(() => { launches = []; })
+  ];
+  if(withCommand){
+    jobs.push(
+      storageGet(commandKey(date)).then(c => { dailyCommandCurrent = (c && c.value) ? JSON.parse(c.value) : {}; }).catch(() => { dailyCommandCurrent = {}; })
+    );
+  }
+  await Promise.all(jobs);
+}
+
+async function loadEventIndex(){
+  try{
+    const r = await storageGet('event-index');
+    eventIndex = (r && r.value) ? JSON.parse(r.value) : [];
+  }catch(e){ eventIndex = []; }
+}
+
+async function addEventToIndex(name){
+  if(!name) return;
+  if(!eventIndex.includes(name)){
+    eventIndex.push(name);
+    await saveKey('event-index', eventIndex);
+  }
+}
+
 async function persistLaunches(){
-  await saveKey('efetivo-launches', launches);
+  await saveKey(activeBucketKey(), launches);
 }
 async function persistDailyCommand(){
-  await saveKey('efetivo-daily-command', dailyCommand);
+  await saveKey(commandKey(selectedDate), dailyCommandCurrent);
 }
 
 async function saveKey(key, value, attempt = 1){
@@ -184,10 +237,16 @@ function renderHeader(){
 function switchTab(t){
   currentTab = t;
   document.getElementById('tabNew').classList.toggle('active', t==='new');
+  document.getElementById('tabNewEvento').classList.toggle('active', t==='newEvento');
   document.getElementById('tabDay').classList.toggle('active', t==='day');
+  document.getElementById('tabDayEvento').classList.toggle('active', t==='dayEvento');
   document.getElementById('viewNew').classList.toggle('hidden', t!=='new');
+  document.getElementById('viewNewEvento').classList.toggle('hidden', t!=='newEvento');
   document.getElementById('viewDay').classList.toggle('hidden', t!=='day');
-  if(t==='day') renderDayView();
+  document.getElementById('viewDayEvento').classList.toggle('hidden', t!=='dayEvento');
+  if(t==='day'){ activeBucketType='daily'; loadDateData(selectedDate).then(renderDayView); }
+  if(t==='dayEvento'){ activeBucketType='evento'; renderEventoListView(); }
+  if(t==='newEvento' && !document.getElementById('opGt')) resetEventoForm();
 }
 
 // ---------- NOVO LANÇAMENTO ----------
@@ -240,10 +299,19 @@ function renderNewForm(){
         <div><label>PAT</label><input id="vPat" placeholder="Ex: 1300062" /></div>
       </div>
       <label>Placa</label>
-      <input id="vPlaca" placeholder="Ex: SEG3G12" />
+      <input id="vPlaca" placeholder="Ex: SEG3G12" style="margin-bottom:10px;" />
+      <label>Armado com o cartão?</label>
+      <div style="display:flex; gap:16px; margin-bottom:0;">
+        <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
+          <input type="radio" name="vArmado" value="sim" style="width:auto; margin:0;" /> Sim
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
+          <input type="radio" name="vArmado" value="nao" style="width:auto; margin:0;" /> Não
+        </label>
+      </div>
     </div>
 
-    <button class="btn btn-accent btn-block" onclick="saveLaunch()">Salvar lançamento</button>
+    <button class="btn btn-accent btn-block" id="btnSaveLaunch" onclick="saveLaunch()">Salvar lançamento</button>
   `;
   document.getElementById('viewNew').innerHTML = html;
   renderEfetivoRows();
@@ -288,7 +356,16 @@ function renderEfetivoRows(){
             <div><label>PAT</label><input value="${r.viatura.pat || ''}" onchange="updateRowViatura('${r.id}','pat',this.value)" /></div>
           </div>
           <label>Placa</label>
-          <input value="${r.viatura.placa || ''}" onchange="updateRowViatura('${r.id}','placa',this.value)" style="margin-bottom:0;" />
+          <input value="${r.viatura.placa || ''}" onchange="updateRowViatura('${r.id}','placa',this.value)" style="margin-bottom:10px;" />
+          <label>Armado com o cartão?</label>
+          <div style="display:flex; gap:16px; margin-bottom:0;">
+            <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
+              <input type="radio" name="vArmado_${r.id}" value="sim" ${r.viatura.armadoCartao==='sim' ? 'checked' : ''} onchange="updateRowViatura('${r.id}','armadoCartao','sim')" style="width:auto; margin:0;" /> Sim
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
+              <input type="radio" name="vArmado_${r.id}" value="nao" ${r.viatura.armadoCartao==='nao' ? 'checked' : ''} onchange="updateRowViatura('${r.id}','armadoCartao','nao')" style="width:auto; margin:0;" /> Não
+            </label>
+          </div>
         </div>
       ` : ''}
       <label style="margin-top:10px;">Observação</label>
@@ -322,7 +399,7 @@ function updateRowChecked(id, field, value){
 function toggleRowViatura(id){
   const r = efetivoRows.find(x => x.id === id);
   if(!r) return;
-  r.viatura = r.viatura ? null : { modelo:"", km:"", pat:"", placa:"" };
+  r.viatura = r.viatura ? null : { modelo:"", km:"", pat:"", placa:"", armadoCartao:"" };
   renderEfetivoRows();
 }
 function updateRowViatura(id, field, value){
@@ -338,6 +415,21 @@ function removeEfetivoRow(id){
   renderEfetivoRows();
 }
 
+function setBtnSaving(id, saving){
+  const btn = document.getElementById(id);
+  if(!btn) return;
+  if(saving){
+    btn.dataset.originalText = btn.textContent;
+    btn.textContent = 'Salvando...';
+    btn.disabled = true;
+    btn.style.opacity = '0.6';
+  } else {
+    btn.textContent = btn.dataset.originalText || btn.textContent;
+    btn.disabled = false;
+    btn.style.opacity = '1';
+  }
+}
+
 async function saveLaunch(){
   const gt = document.getElementById('fGt').value.trim();
   const cidade = document.getElementById('fCidade').value.trim();
@@ -349,7 +441,8 @@ async function saveLaunch(){
     modelo: document.getElementById('vModelo').value.trim(),
     km: document.getElementById('vKm').value.trim(),
     pat: document.getElementById('vPat').value.trim(),
-    placa: document.getElementById('vPlaca').value.trim()
+    placa: document.getElementById('vPlaca').value.trim(),
+    armadoCartao: (document.querySelector('input[name="vArmado"]:checked') || {}).value || ''
   };
   const efetivo = efetivoRows.filter(r => r.nome.trim() !== "");
 
@@ -367,19 +460,230 @@ async function saveLaunch(){
     gcoi: false, gcoiAt: null,
     createdAt: Date.now()
   };
+
+  setBtnSaving('btnSaveLaunch', true);
+  if(data !== selectedDate || activeBucketType !== 'daily'){
+    await loadDateData(data, false);
+  }
   launches.push(launch);
+  selectedDate = data;
   await persistLaunches();
   lastHeader = { gt, cidade, codigo };
-  selectedDate = data;
   resetNewForm();
   switchTab('day');
 }
 
+// ---------- LANÇAMENTO EM EVENTO/OPERAÇÃO (criação) ----------
+function resetEventoForm(){
+  efetivoRowsEvento = [
+    {id:uid(), patente:"", re:"", nome:"", tel:"", sexo:"M", motorista:false, viatura:null, observacao:""}
+  ];
+  renderEventoForm();
+}
+
+function renderEventoForm(){
+  const html = `
+    <div class="card">
+      <div class="section-title">SERVIÇO</div>
+      <label>Evento/ Operação</label>
+      <input list="eventosConhecidos" id="opEvento" value="" placeholder="Ex: OPERAÇÃO VERÃO 2026" />
+      <label>Tipo de serviço / GT</label>
+      <input id="opGt" value="" placeholder="Ex: GT EXTRA, RONDA OSTENSIVA, OP. GARRA" />
+      <div class="row">
+        <div><label>Cidade</label><input id="opCidade" value="" placeholder="Ex: ARARIPINA" /></div>
+        <div><label>Prefixo</label><input id="opCodigo" value="" placeholder="Ex: GTI9012" /></div>
+      </div>
+      <datalist id="eventosConhecidos">
+        ${eventIndex.map(e => `<option value="${e}"></option>`).join('')}
+      </datalist>
+    </div>
+
+    <div class="card">
+      <label>Data</label>
+      <input type="date" id="opData" value="${selectedDate}" />
+      <div class="row">
+        <div>
+          <label>Horário início</label>
+          <input type="time" id="opInicio" value="" />
+        </div>
+        <div>
+          <label>Horário fim</label>
+          <input type="time" id="opFim" value="" />
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">Efetivo</div>
+      <div id="opEfetivoRows"></div>
+      <button class="btn btn-ghost btn-block" onclick="addEfetivoRowEvento()">+ policial</button>
+    </div>
+
+    <div class="card">
+      <div class="section-title">VIATURA</div>
+      <label>Modelo</label>
+      <input id="opvModelo" placeholder="Ex: DUSTER" />
+      <div class="row">
+        <div><label>KM</label><input id="opvKm" placeholder="Ex: 65097" /></div>
+        <div><label>PAT</label><input id="opvPat" placeholder="Ex: 1300062" /></div>
+      </div>
+      <label>Placa</label>
+      <input id="opvPlaca" placeholder="Ex: SEG3G12" style="margin-bottom:10px;" />
+      <label>Armado com o cartão?</label>
+      <div style="display:flex; gap:16px; margin-bottom:0;">
+        <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
+          <input type="radio" name="opvArmado" value="sim" style="width:auto; margin:0;" /> Sim
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
+          <input type="radio" name="opvArmado" value="nao" style="width:auto; margin:0;" /> Não
+        </label>
+      </div>
+    </div>
+
+    <button class="btn btn-accent btn-block" id="btnSaveLaunchEvento" onclick="saveLaunchEvento()">Salvar lançamento</button>
+  `;
+  document.getElementById('viewNewEvento').innerHTML = html;
+  renderEfetivoRowsEvento();
+}
+
+function renderEfetivoRowsEvento(){
+  const container = document.getElementById('opEfetivoRows');
+  container.innerHTML = efetivoRowsEvento.map((r) => `
+    <div class="efetivo-row">
+      ${efetivoRowsEvento.length > 1 ? `<button class="rm" onclick="removeEfetivoRowEvento('${r.id}')">✕</button>` : ''}
+      <div class="row">
+        <div>
+          <label>Posto/ Graduação</label>
+          <input list="patentes" value="${r.patente}" placeholder="Ex: 2º SGT PM" onchange="updateRowEvento('${r.id}','patente',this.value)" />
+        </div>
+        <div>
+          <label>Sexo</label>
+          <select onchange="updateRowEvento('${r.id}','sexo',this.value)">
+            <option value="M" ${r.sexo==='M'?'selected':''}>Masculino</option>
+            <option value="F" ${r.sexo==='F'?'selected':''}>Feminino</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div><label>Matrícula</label><input value="${r.re}" placeholder="Ex: 1064720" onchange="updateRowEvento('${r.id}','re',this.value)" /></div>
+        <div><label>Nome</label><input value="${r.nome}" placeholder="Ex: ERONILDO" onchange="updateRowEvento('${r.id}','nome',this.value)" /></div>
+      </div>
+      <label>Telefone</label>
+      <input value="${r.tel}" placeholder="Ex: 87 98123-4871" onchange="updateRowEvento('${r.id}','tel',this.value)" style="margin-bottom:0;" />
+      <label style="display:flex; align-items:center; gap:8px; text-transform:none; letter-spacing:0; margin-top:10px; margin-bottom:0;">
+        <input type="checkbox" style="width:auto; margin:0;" ${r.motorista ? 'checked' : ''} onchange="updateRowCheckedEvento('${r.id}','motorista',this.checked)" /> Motorista 🚗
+      </label>
+      <button class="btn btn-ghost" style="margin-top:10px; width:100%;" onclick="toggleRowViaturaEventoNew('${r.id}')">
+        ${r.viatura ? '✕ Remover viatura individual' : '🏍️ Adicionar viatura (moto)'}
+      </button>
+      ${r.viatura ? `
+        <div style="margin-top:10px;">
+          <label>Modelo</label>
+          <input value="${r.viatura.modelo || ''}" placeholder="Ex: CG 160" onchange="updateRowViaturaEventoNew('${r.id}','modelo',this.value)" />
+          <div class="row">
+            <div><label>KM</label><input value="${r.viatura.km || ''}" onchange="updateRowViaturaEventoNew('${r.id}','km',this.value)" /></div>
+            <div><label>PAT</label><input value="${r.viatura.pat || ''}" onchange="updateRowViaturaEventoNew('${r.id}','pat',this.value)" /></div>
+          </div>
+          <label>Placa</label>
+          <input value="${r.viatura.placa || ''}" onchange="updateRowViaturaEventoNew('${r.id}','placa',this.value)" style="margin-bottom:10px;" />
+          <label>Armado com o cartão?</label>
+          <div style="display:flex; gap:16px; margin-bottom:0;">
+            <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
+              <input type="radio" name="opvArmado_${r.id}" value="sim" ${r.viatura.armadoCartao==='sim' ? 'checked' : ''} onchange="updateRowViaturaEventoNew('${r.id}','armadoCartao','sim')" style="width:auto; margin:0;" /> Sim
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
+              <input type="radio" name="opvArmado_${r.id}" value="nao" ${r.viatura.armadoCartao==='nao' ? 'checked' : ''} onchange="updateRowViaturaEventoNew('${r.id}','armadoCartao','nao')" style="width:auto; margin:0;" /> Não
+            </label>
+          </div>
+        </div>
+      ` : ''}
+      <label style="margin-top:10px;">Observação</label>
+      <textarea placeholder="Substituindo o Sd PM XXXXX (01234568)" onchange="updateRowEvento('${r.id}','observacao',this.value)" style="min-height:50px; margin-bottom:0;">${r.observacao || ''}</textarea>
+    </div>
+  `).join('');
+}
+
+function updateRowEvento(id, field, value){
+  const r = efetivoRowsEvento.find(x => x.id === id);
+  if(r) r[field] = value;
+}
+function updateRowCheckedEvento(id, field, value){
+  const r = efetivoRowsEvento.find(x => x.id === id);
+  if(r) r[field] = value;
+}
+function toggleRowViaturaEventoNew(id){
+  const r = efetivoRowsEvento.find(x => x.id === id);
+  if(!r) return;
+  r.viatura = r.viatura ? null : { modelo:"", km:"", pat:"", placa:"", armadoCartao:"" };
+  renderEfetivoRowsEvento();
+}
+function updateRowViaturaEventoNew(id, field, value){
+  const r = efetivoRowsEvento.find(x => x.id === id);
+  if(r && r.viatura) r.viatura[field] = value;
+}
+function addEfetivoRowEvento(){
+  efetivoRowsEvento.push({id:uid(), patente:"", re:"", nome:"", tel:"", sexo:"M", motorista:false, viatura:null, observacao:""});
+  renderEfetivoRowsEvento();
+}
+function removeEfetivoRowEvento(id){
+  efetivoRowsEvento = efetivoRowsEvento.filter(r => r.id !== id);
+  renderEfetivoRowsEvento();
+}
+
+async function saveLaunchEvento(){
+  const evento = document.getElementById('opEvento').value.trim();
+  if(!evento){
+    alert("Informe o nome do Evento/Operação.");
+    return;
+  }
+  const gt = document.getElementById('opGt').value.trim();
+  const cidade = document.getElementById('opCidade').value.trim();
+  const codigo = document.getElementById('opCodigo').value.trim();
+  const data = document.getElementById('opData').value || todayISO();
+  const inicio = document.getElementById('opInicio').value;
+  const fim = document.getElementById('opFim').value;
+  const viatura = {
+    modelo: document.getElementById('opvModelo').value.trim(),
+    km: document.getElementById('opvKm').value.trim(),
+    pat: document.getElementById('opvPat').value.trim(),
+    placa: document.getElementById('opvPlaca').value.trim(),
+    armadoCartao: (document.querySelector('input[name="opvArmado"]:checked') || {}).value || ''
+  };
+  const efetivo = efetivoRowsEvento.filter(r => r.nome.trim() !== "");
+
+  if(efetivo.length === 0){
+    alert("Adicione ao menos um policial no efetivo antes de salvar.");
+    return;
+  }
+
+  const launch = {
+    id: uid(),
+    date: data,
+    evento,
+    inicio, fim,
+    gt, cidade, codigo,
+    efetivo, viatura,
+    gcoi: false, gcoiAt: null,
+    createdAt: Date.now()
+  };
+
+  setBtnSaving('btnSaveLaunchEvento', true);
+  if(data !== selectedEventDate || activeBucketType !== 'evento'){
+    await loadEventoData(data, false);
+  }
+  launches.push(launch);
+  await persistLaunches();
+  await addEventToIndex(evento);
+  resetEventoForm();
+  switchTab('dayEvento');
+}
+
+
 // ---------- LANÇAMENTOS DO DIA ----------
 function renderDayView(){
-  const allDayLaunches = launches.filter(l => l.date === selectedDate).sort((a,b) => a.createdAt - b.createdAt);
+  const allDayLaunches = [...launches].sort((a,b) => a.createdAt - b.createdAt);
   const dayLaunches = allDayLaunches.filter(l => !l.removed);
-  const dc = dailyCommand[selectedDate] || {};
+  const dc = dailyCommandCurrent || {};
   const html = `
     <div class="card">
       <label>Data para consulta / relatório</label>
@@ -406,14 +710,71 @@ function renderDayView(){
   document.getElementById('viewDay').innerHTML = html;
 }
 
-function changeDate(v){ selectedDate = v; renderDayView(); }
+// ---------- LANÇAMENTO EM EVENTO/OPERAÇÃO (consulta) ----------
+async function renderEventoListView(){
+  document.getElementById('viewDayEvento').innerHTML = '<div class="empty">Carregando...</div>';
+  await loadEventoData(selectedEventDate);
+  renderEventoListBody();
+}
+
+function sortGroupedByEvento(list){
+  return [...list].sort((a,b) => {
+    const ea = (a.evento || '').toLowerCase();
+    const eb = (b.evento || '').toLowerCase();
+    if(ea !== eb) return ea < eb ? -1 : 1;
+    return a.createdAt - b.createdAt;
+  });
+}
+
+function renderEventoListBody(){
+  const allLaunches = sortGroupedByEvento(launches);
+  const visibleLaunches = allLaunches.filter(l => !l.removed);
+
+  let lastEvento = null;
+  const cardsHtml = visibleLaunches.map(l => {
+    const groupHeader = l.evento !== lastEvento
+      ? `<div class="section-title" style="font-size:14px; margin-top:14px; margin-bottom:6px; color:var(--accent);">📌 ${l.evento || '(sem nome de evento)'}</div>`
+      : '';
+    lastEvento = l.evento;
+    return groupHeader + launchCard(l);
+  }).join('');
+
+  const html = `
+    <div class="card">
+      <label>Data para consulta / relatório</label>
+      <input type="date" id="eSelect" value="${selectedEventDate}" onchange="changeEventoDate(this.value)" />
+      <button class="btn btn-accent btn-block" ${allLaunches.length===0 ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''} onclick="generatePDF()">
+        📄 Gerar relatório PDF do dia (${allLaunches.length})
+      </button>
+    </div>
+    <div class="section-title">Lançamentos de Evento/ Operação — ${fmtDateBR(selectedEventDate)}</div>
+    ${visibleLaunches.length === 0 ? `<div class="empty">${allLaunches.length > 0 ? 'Todos os lançamentos desta data foram removidos. Eles continuam disponíveis no relatório PDF.' : 'Nenhum lançamento de evento/operação para esta data ainda.'}</div>` :
+      cardsHtml}
+  `;
+  document.getElementById('viewDayEvento').innerHTML = html;
+}
+
+async function changeEventoDate(v){
+  document.getElementById('viewDayEvento').innerHTML = '<div class="empty">Carregando...</div>';
+  await loadEventoData(v);
+  renderEventoListBody();
+}
+
+
+async function changeDate(v){
+  selectedDate = v;
+  document.getElementById('viewDay').innerHTML = '<div class="empty">Carregando...</div>';
+  await loadDateData(selectedDate);
+  renderDayView();
+}
 
 function launchCard(l){
-  const efetivoTxt = l.efetivo.map(p => `${p.sexo==='F'?'👮🏻‍♀️':'👮🏻‍♂️'} ${p.patente} ${p.re} ${p.nome}${p.motorista ? ' 🚗 (motorista)' : ''}${p.tel ? '\nTel. ' + p.tel : ''}${p.viatura ? `\n🏍️ Viatura: ${p.viatura.modelo || '-'} · KM ${p.viatura.km || '-'} · PAT ${p.viatura.pat || '-'} · Placa ${p.viatura.placa || '-'}` : ''}${p.observacao ? `\n📝 ${p.observacao}` : ''}`).join('\n\n');
-  const headerLine = [l.gt, l.cidade, l.codigo].filter(Boolean).join(' - ');
+  const armadoTxt = (v) => v.armadoCartao ? ` · Armado c/ cartão: ${v.armadoCartao === 'sim' ? 'Sim' : 'Não'}` : '';
+  const efetivoTxt = l.efetivo.map(p => `${p.sexo==='F'?'👮🏻‍♀️':'👮🏻‍♂️'} ${p.patente} ${p.re} ${p.nome}${p.motorista ? ' 🚗 (motorista)' : ''}${p.tel ? '\nTel. ' + p.tel : ''}${p.viatura ? `\n🏍️ Viatura: ${p.viatura.modelo || '-'} · KM ${p.viatura.km || '-'} · PAT ${p.viatura.pat || '-'} · Placa ${p.viatura.placa || '-'}${armadoTxt(p.viatura)}` : ''}${p.observacao ? `\n📝 ${p.observacao}` : ''}`).join('\n\n');
+  const headerLine = [l.evento, l.gt, l.cidade, l.codigo].filter(Boolean).join(' - ');
   const hasViaturaGeral = l.viatura.modelo || l.viatura.km || l.viatura.pat || l.viatura.placa;
   const viaturaTxt = hasViaturaGeral
-    ? `\n\nVIATURA: ${l.viatura.modelo || '-'}\nKM: ${l.viatura.km || '-'}\nPAT: ${l.viatura.pat || '-'}\nPLACA: ${l.viatura.placa || '-'}`
+    ? `\n\nVIATURA: ${l.viatura.modelo || '-'}\nKM: ${l.viatura.km || '-'}\nPAT: ${l.viatura.pat || '-'}\nPLACA: ${l.viatura.placa || '-'}${l.viatura.armadoCartao ? `\nArmado com o cartão: ${l.viatura.armadoCartao === 'sim' ? 'Sim' : 'Não'}` : ''}`
     : '';
   const preview = `${headerLine}\n\n📆 Data: ${fmtDatePT(l.date)}\n⏰ Horário: ${l.inicio} às ${l.fim}\n\nEFETIVO:\n\n${efetivoTxt}${viaturaTxt}`;
   return `
@@ -435,13 +796,18 @@ function launchCard(l){
 
 const GCOI_URL = "https://docs.google.com/forms/d/e/1FAIpQLSfXmQPbDoVJhxaGKo3inLoycstG_EngRbPMDeEVW_bwZPtrFg/viewform";
 
+function renderActiveListView(){
+  if(activeBucketType === 'evento') renderEventoListBody();
+  else renderDayView();
+}
+
 async function openGcoi(id){
   const l = launches.find(x => x.id === id);
   if(l){
     l.gcoi = true;
     l.gcoiAt = Date.now();
     await persistLaunches();
-    renderDayView();
+    renderActiveListView();
   }
   window.open(GCOI_URL, '_blank');
 }
@@ -449,16 +815,22 @@ async function openGcoi(id){
 async function deleteLaunch(id){
   const l = launches.find(x => x.id === id);
   if(!l) return;
-  if(!confirm('Remover este lançamento da lista? Ele continuará aparecendo no relatório PDF do dia com a observação de remoção.')) return;
+  const reason = prompt('Informe o motivo da remoção deste lançamento (obrigatório). Ele continuará no relatório PDF, com essa justificativa.');
+  if(reason === null) return; // cancelado
+  if(!reason.trim()){
+    alert('É necessário informar um motivo para remover o lançamento.');
+    return;
+  }
   l.removed = true;
   l.removedAt = Date.now();
+  l.removedReason = reason.trim();
   await persistLaunches();
-  renderDayView();
+  renderActiveListView();
 }
 
 // ---------- PDF ----------
 function generatePDF(){
-  const dayLaunches = launches.filter(l => l.date === selectedDate).sort((a,b) => a.createdAt - b.createdAt);
+  const dayLaunches = activeBucketType === 'evento' ? sortGroupedByEvento(launches) : [...launches].sort((a,b) => a.createdAt - b.createdAt);
   if(dayLaunches.length === 0) return;
 
   const { jsPDF } = window.jspdf;
@@ -476,7 +848,7 @@ function generatePDF(){
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(9);
       doc.setTextColor(120,120,120);
-      doc.text('CADASTRO DE EFETIVO · 9ª CIPM (continuação)', marginL, 34);
+      doc.text('MAPA DE FORÇA · 9ª CIPM (continuação)', marginL, 34);
       doc.setDrawColor(220); doc.line(marginL, 40, pageW - marginR, 40);
       doc.setTextColor(0,0,0);
     }
@@ -498,34 +870,39 @@ function generatePDF(){
   doc.rect(0, 0, pageW, 76, 'F');
   doc.setFillColor(200,16,46);
   doc.rect(0, 76, pageW, 3, 'F');
+  const subtitleLine = activeBucketType === 'evento'
+    ? `Relatório de Evento/ Operação — ${fmtDateBR(selectedEventDate)}`
+    : `Relatório do dia ${fmtDateBR(selectedDate)}`;
   try{
     doc.addImage(LOGO_B64, 'PNG', marginL, 12, 40, 57);
     doc.setTextColor(255,255,255);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(18);
-    doc.text('CADASTRO DE EFETIVO', marginL + 54, 36);
+    doc.text('MAPA DE FORÇA', marginL + 54, 36);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(10.5);
     doc.text('9ª Companhia Independente de Polícia Militar', marginL + 54, 52);
     doc.setFontSize(10);
-    doc.text(`Relatório do dia ${fmtDateBR(selectedDate)}`, marginL + 54, 66);
+    doc.text(subtitleLine, marginL + 54, 66);
   }catch(e){
     doc.setTextColor(255,255,255);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(18);
-    doc.text('CADASTRO DE EFETIVO', marginL, 40);
+    doc.text('MAPA DE FORÇA', marginL, 40);
   }
   doc.setTextColor(0,0,0);
   y = 105;
   doc.setDrawColor(200); doc.line(marginL, y, pageW - marginR, y); y += 18;
 
-  const dc = dailyCommand[selectedDate] || {};
-  line('Serviço diário', {bold:true, size:12.5, gap:16});
-  line(`Comando: ${dc.comando || '-'}`, {size:10, gap:13});
-  line(`Subcomando: ${dc.subcomando || '-'}`, {size:10, gap:13});
-  line(`Oficial de Operações: ${dc.oficialOperacoes || '-'}`, {size:10, gap:13});
-  y += 6;
-  doc.setDrawColor(230); doc.line(marginL, y, pageW - marginR, y); y += 18;
+  {
+    const dc = dailyCommandCurrent || {};
+    line('Serviço diário', {bold:true, size:12.5, gap:16});
+    line(`Comando: ${dc.comando || '-'}`, {size:10, gap:13});
+    line(`Subcomando: ${dc.subcomando || '-'}`, {size:10, gap:13});
+    line(`Oficial de Operações: ${dc.oficialOperacoes || '-'}`, {size:10, gap:13});
+    y += 6;
+    doc.setDrawColor(230); doc.line(marginL, y, pageW - marginR, y); y += 18;
+  }
 
   function fmtWhen(ts){
     if(!ts) return '-';
@@ -536,7 +913,10 @@ function generatePDF(){
 
   function printBlock(src, whenLabel, whenTs){
     checkPage(100);
-    const headerLine = [src.gt, src.cidade, src.codigo].filter(Boolean).join(' - ') || 'Lançamento';
+    const headerParts = [];
+    if(src.evento) headerParts.push(src.evento);
+    headerParts.push(...[src.gt, src.cidade, src.codigo].filter(Boolean));
+    const headerLine = headerParts.join(' - ') || 'Lançamento';
     line(headerLine, {bold:true, size:12.5, gap:16});
     line(`${whenLabel}: ${fmtWhen(whenTs)}`, {size:9.5, gap:12});
     line(`Data do serviço: ${fmtDateBR(src.date)}    Horário: ${src.inicio} às ${src.fim}`, {size:10.5, gap:14});
@@ -544,7 +924,7 @@ function generatePDF(){
     src.efetivo.forEach(p => {
       line(`• ${p.patente || '(patente não informada)'} ${p.re} ${p.nome}${p.motorista ? ' (motorista)' : ''}${p.tel ? '  |  Tel: ' + p.tel : ''}`, {size:10.5, gap:13});
       if(p.viatura){
-        line(`   Viatura individual: ${p.viatura.modelo || '-'}  KM: ${p.viatura.km || '-'}  PAT: ${p.viatura.pat || '-'}  Placa: ${p.viatura.placa || '-'}`, {size:9.5, gap:12});
+        line(`   Viatura individual: ${p.viatura.modelo || '-'}  KM: ${p.viatura.km || '-'}  PAT: ${p.viatura.pat || '-'}  Placa: ${p.viatura.placa || '-'}${p.viatura.armadoCartao ? '  |  Armado c/ cartão: ' + (p.viatura.armadoCartao === 'sim' ? 'Sim' : 'Não') : ''}`, {size:9.5, gap:12});
       }
       if(p.observacao){
         line(`   Obs.: ${p.observacao}`, {size:9.5, gap:12});
@@ -554,11 +934,27 @@ function generatePDF(){
     const gv = src.viatura || {};
     if(gv.modelo || gv.km || gv.pat || gv.placa){
       line(`Viatura geral: ${gv.modelo || '-'}    KM: ${gv.km || '-'}    PAT: ${gv.pat || '-'}    Placa: ${gv.placa || '-'}`, {size:10.5, gap:14});
+      if(gv.armadoCartao){
+        line(`Armado com o cartão: ${gv.armadoCartao === 'sim' ? 'Sim' : 'Não'}`, {size:10.5, gap:14});
+      }
     }
   }
 
+  let lastEventoPDF = null;
   dayLaunches.forEach((l, idx) => {
     checkPage(100);
+    if(activeBucketType === 'evento' && l.evento !== lastEventoPDF){
+      checkPage(30);
+      doc.setFillColor(11,31,110);
+      doc.setTextColor(255,255,255);
+      doc.rect(marginL, y - 12, contentW, 18, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10.5);
+      doc.text(`EVENTO/OPERAÇÃO: ${l.evento || '(sem nome de evento)'}`, marginL + 6, y + 1);
+      doc.setTextColor(0,0,0);
+      y += 16;
+      lastEventoPDF = l.evento;
+    }
     if(l.edited && l.original){
       printBlock(l.original, 'Cadastro original lançado em', l.createdAt);
       y += 4;
@@ -575,7 +971,7 @@ function generatePDF(){
     if(l.removed){
       y += 4;
       doc.setTextColor(200,16,46);
-      line(`Observação: este registro foi removido em ${fmtWhen(l.removedAt)}. Mantido aqui para fins de controle.`, {bold:true, size:9.5, gap:13});
+      line(`Observação: este registro foi removido em ${fmtWhen(l.removedAt)}. Motivo: ${l.removedReason || 'não informado'}. Mantido aqui para fins de controle.`, {bold:true, size:9.5, gap:13});
       doc.setTextColor(0,0,0);
     }
     y += 10;
@@ -600,7 +996,10 @@ function generatePDF(){
     doc.restoreGraphicsState();
   }
 
-  doc.save(`cadastro-efetivo_${selectedDate}.pdf`);
+  const fileSuffix = activeBucketType === 'evento'
+    ? `evento_${selectedEventDate}`
+    : selectedDate;
+  doc.save(`mapa-de-forca_${fileSuffix}.pdf`);
 }
 
 // ---------- EDITAR LANÇAMENTO ----------
@@ -625,6 +1024,10 @@ function openEditLaunch(id){
         </div>
 
         <div class="section-title">SERVIÇO</div>
+        ${activeBucketType === 'evento' ? `
+        <label>Evento/ Operação</label>
+        <input id="eEvento" value="${l.evento || ''}" />
+        ` : ''}
         <label>Tipo de serviço / GT</label>
         <input id="eGt" value="${l.gt}" />
         <div class="row">
@@ -650,9 +1053,18 @@ function openEditLaunch(id){
           <div><label>PAT</label><input id="evPat" value="${l.viatura.pat}" /></div>
         </div>
         <label>Placa</label>
-        <input id="evPlaca" value="${l.viatura.placa}" />
+        <input id="evPlaca" value="${l.viatura.placa}" style="margin-bottom:10px;" />
+        <label>Armado com o cartão?</label>
+        <div style="display:flex; gap:16px; margin-bottom:0;">
+          <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
+            <input type="radio" name="evArmado" value="sim" ${l.viatura.armadoCartao==='sim' ? 'checked' : ''} style="width:auto; margin:0;" /> Sim
+          </label>
+          <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
+            <input type="radio" name="evArmado" value="nao" ${l.viatura.armadoCartao==='nao' ? 'checked' : ''} style="width:auto; margin:0;" /> Não
+          </label>
+        </div>
 
-        <button class="btn btn-accent btn-block" onclick="saveEditLaunch()">Salvar alteração</button>
+        <button class="btn btn-accent btn-block" id="btnSaveEdit" onclick="saveEditLaunch()">Salvar alteração</button>
       </div>
     </div>
   `;
@@ -698,7 +1110,16 @@ function renderEfetivoRowsEdit(){
             <div><label>PAT</label><input value="${r.viatura.pat || ''}" onchange="updateRowViaturaEdit('${r.id}','pat',this.value)" /></div>
           </div>
           <label>Placa</label>
-          <input value="${r.viatura.placa || ''}" onchange="updateRowViaturaEdit('${r.id}','placa',this.value)" style="margin-bottom:0;" />
+          <input value="${r.viatura.placa || ''}" onchange="updateRowViaturaEdit('${r.id}','placa',this.value)" style="margin-bottom:10px;" />
+          <label>Armado com o cartão?</label>
+          <div style="display:flex; gap:16px; margin-bottom:0;">
+            <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
+              <input type="radio" name="evArmado_${r.id}" value="sim" ${r.viatura.armadoCartao==='sim' ? 'checked' : ''} onchange="updateRowViaturaEdit('${r.id}','armadoCartao','sim')" style="width:auto; margin:0;" /> Sim
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
+              <input type="radio" name="evArmado_${r.id}" value="nao" ${r.viatura.armadoCartao==='nao' ? 'checked' : ''} onchange="updateRowViaturaEdit('${r.id}','armadoCartao','nao')" style="width:auto; margin:0;" /> Não
+            </label>
+          </div>
         </div>
       ` : ''}
       <label style="margin-top:10px;">Observação</label>
@@ -718,7 +1139,7 @@ function updateRowEditChecked(id, field, value){
 function toggleRowViaturaEdit(id){
   const r = efetivoRowsEdit.find(x => x.id === id);
   if(!r) return;
-  r.viatura = r.viatura ? null : { modelo:"", km:"", pat:"", placa:"" };
+  r.viatura = r.viatura ? null : { modelo:"", km:"", pat:"", placa:"", armadoCartao:"" };
   renderEfetivoRowsEdit();
 }
 function updateRowViaturaEdit(id, field, value){
@@ -742,6 +1163,9 @@ function closeEditModal(){
 async function saveEditLaunch(){
   const l = launches.find(x => x.id === editingLaunchId);
   if(!l) return;
+  const oldDate = l.date;
+  const oldEvento = l.evento;
+  const wasEvento = activeBucketType === 'evento';
 
   const efetivo = efetivoRowsEdit.filter(r => r.nome.trim() !== "").map(r => ({...r}));
   if(efetivo.length === 0){
@@ -752,12 +1176,17 @@ async function saveEditLaunch(){
   // preserva o registro original apenas na primeira edição
   if(!l.original){
     l.original = {
-      gt: l.gt, cidade: l.cidade, codigo: l.codigo,
+      gt: l.gt, cidade: l.cidade, codigo: l.codigo, evento: l.evento,
       date: l.date, inicio: l.inicio, fim: l.fim,
       efetivo: l.efetivo, viatura: l.viatura
     };
   }
 
+  setBtnSaving('btnSaveEdit', true);
+
+  if(wasEvento){
+    l.evento = document.getElementById('eEvento').value.trim() || l.evento;
+  }
   l.gt = document.getElementById('eGt').value.trim();
   l.cidade = document.getElementById('eCidade').value.trim();
   l.codigo = document.getElementById('eCodigo').value.trim();
@@ -768,7 +1197,8 @@ async function saveEditLaunch(){
     modelo: document.getElementById('evModelo').value.trim(),
     km: document.getElementById('evKm').value.trim(),
     pat: document.getElementById('evPat').value.trim(),
-    placa: document.getElementById('evPlaca').value.trim()
+    placa: document.getElementById('evPlaca').value.trim(),
+    armadoCartao: (document.querySelector('input[name="evArmado"]:checked') || {}).value || ''
   };
   l.efetivo = efetivo;
   l.edited = true;
@@ -776,16 +1206,37 @@ async function saveEditLaunch(){
   l.gcoi = false;
   l.gcoiAt = null;
 
-  await persistLaunches();
+  const moved = l.date !== oldDate;
+
+  if(moved){
+    // move o lançamento para a "gaveta" da nova data (mesmo bucket do tipo atual: diário ou evento)
+    launches = launches.filter(x => x.id !== l.id);
+    if(wasEvento){
+      await saveKey(eventLaunchesKey(oldDate), launches);
+      await loadEventoData(l.date, false);
+      launches.push(l);
+      await persistLaunches();
+    } else {
+      await saveKey(launchesKey(oldDate), launches);
+      await loadDateData(l.date);
+      launches.push(l);
+      await persistLaunches();
+    }
+  } else {
+    await persistLaunches();
+  }
+
+  if(wasEvento && l.evento !== oldEvento){
+    await addEventToIndex(l.evento);
+  }
+
   closeEditModal();
-  selectedDate = l.date;
-  renderDayView();
+  renderActiveListView();
 }
 
 // ---------- COMANDO DO DIA ----------
 async function saveDailyCommand(){
-  const d = selectedDate;
-  dailyCommand[d] = {
+  dailyCommandCurrent = {
     comando: document.getElementById('dcComando').value.trim(),
     subcomando: document.getElementById('dcSubcomando').value.trim(),
     oficialOperacoes: document.getElementById('dcOficial').value.trim()
