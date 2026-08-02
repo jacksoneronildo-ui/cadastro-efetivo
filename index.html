@@ -74,12 +74,14 @@
     <div class="tab" id="tabNewEvento" onclick="switchTab('newEvento')">Lan. em Evento/ Operação</div>
     <div class="tab" id="tabDay" onclick="switchTab('day')">Relatório de serviços diários</div>
     <div class="tab" id="tabDayEvento" onclick="switchTab('dayEvento')">Relatório de Evento/ Operação</div>
+    <div class="tab" id="tabQuant" onclick="switchTab('quant')" style="grid-column: span 2;">Quantitativo de Lançamentos</div>
   </div>
 
   <div id="viewNew"></div>
   <div id="viewNewEvento" class="hidden"></div>
   <div id="viewDay" class="hidden"></div>
   <div id="viewDayEvento" class="hidden"></div>
+  <div id="viewQuant" class="hidden"></div>
 </div>
 
 <div id="modalRoot"></div>
@@ -93,6 +95,8 @@ function fmtDateBR(iso){ const [y,m,d]=iso.split("-"); return `${d}/${m}/${y}`; 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 
 const MOTTO = "9ª CIPM: TRABALHO, FORÇA E DEDICAÇÃO";
+const OFICIAIS_PATENTES = ["CEL PM", "TEN CEL PM", "MAJ PM", "CAP PM", "1º TEN PM", "2º TEN PM"];
+const PRACAS_PATENTES = ["SUBTEN PM", "1º SGT PM", "2º SGT PM", "3º SGT PM", "CB PM", "SD PM"];
 let lastHeader = { gt:"", cidade:"", codigo:"" };
 let launches = [];
 let dailyCommandCurrent = {}; // { comando, subcomando, oficialOperacoes } — referente à selectedDate
@@ -100,6 +104,9 @@ let activeBucketType = 'daily'; // 'daily' | 'evento' — bucket atualmente carr
 let selectedEventDate = todayISO(); // data selecionada na aba de relatório de evento/operação
 let eventIndex = []; // lista de nomes de eventos/operações já usados (sugestão no cadastro)
 let efetivoRowsEvento = [];
+let quantType = 'daily'; // 'daily' | 'evento'
+let quantDate = todayISO();
+let quantLaunches = [];
 let currentTab = 'new';
 let selectedDate = todayISO();
 let efetivoRows = [];
@@ -246,13 +253,16 @@ function switchTab(t){
   document.getElementById('tabNewEvento').classList.toggle('active', t==='newEvento');
   document.getElementById('tabDay').classList.toggle('active', t==='day');
   document.getElementById('tabDayEvento').classList.toggle('active', t==='dayEvento');
+  document.getElementById('tabQuant').classList.toggle('active', t==='quant');
   document.getElementById('viewNew').classList.toggle('hidden', t!=='new');
   document.getElementById('viewNewEvento').classList.toggle('hidden', t!=='newEvento');
   document.getElementById('viewDay').classList.toggle('hidden', t!=='day');
   document.getElementById('viewDayEvento').classList.toggle('hidden', t!=='dayEvento');
+  document.getElementById('viewQuant').classList.toggle('hidden', t!=='quant');
   if(t==='day'){ activeBucketType='daily'; loadDateData(selectedDate).then(renderDayView); }
   if(t==='dayEvento'){ activeBucketType='evento'; renderEventoListView(); }
   if(t==='newEvento' && !document.getElementById('opGt')) resetEventoForm();
+  if(t==='quant') renderQuantView();
 }
 
 // ---------- NOVO LANÇAMENTO ----------
@@ -385,7 +395,8 @@ function renderEfetivoRows(){
       <option value="2º SGT PM"></option>
       <option value="1º SGT PM"></option>
       <option value="SUBTEN PM"></option>
-      <option value="TEN PM"></option>
+      <option value="2º TEN PM"></option>
+      <option value="1º TEN PM"></option>
       <option value="CAP PM"></option>
       <option value="MAJ PM"></option>
       <option value="TEN CEL PM"></option>
@@ -704,9 +715,7 @@ function renderDayView(){
       <label>Comando</label>
       <input id="dcComando" value="${dc.comando || ''}" placeholder="Ex: TEN CEL PM XXXXXXX" onchange="saveDailyCommand()" />
       <label>Subcomando</label>
-      <input id="dcSubcomando" value="${dc.subcomando || ''}" placeholder="Ex: MAJ PM XXXXXXX" onchange="saveDailyCommand()" />
-      <label>Oficial de Operações</label>
-      <input id="dcOficial" value="${dc.oficialOperacoes || ''}" onchange="saveDailyCommand()" style="margin-bottom:0;" />
+      <input id="dcSubcomando" value="${dc.subcomando || ''}" onchange="saveDailyCommand()" placeholder="Ex: MAJ PM XXXXXXX" style="margin-bottom:0;" />
     </div>
 
     <div class="section-title">Lançamentos — ${fmtDateBR(selectedDate)}</div>
@@ -764,6 +773,180 @@ async function changeEventoDate(v){
   document.getElementById('viewDayEvento').innerHTML = '<div class="empty">Carregando...</div>';
   await loadEventoData(v);
   renderEventoListBody();
+}
+
+// ---------- QUANTITATIVO DE LANÇAMENTOS ----------
+function computeQuantitativo(list){
+  const counts = {};
+  list.forEach(l => {
+    (l.efetivo || []).forEach(p => {
+      const pat = (p.patente || '').trim() || '(não informado)';
+      counts[pat] = (counts[pat] || 0) + 1;
+    });
+  });
+  const entries = Object.entries(counts).sort((a, b) => a[0].localeCompare(b[0]));
+  let oficiais = 0, pracas = 0, outros = 0;
+  entries.forEach(([pat, n]) => {
+    if(OFICIAIS_PATENTES.includes(pat)) oficiais += n;
+    else if(PRACAS_PATENTES.includes(pat)) pracas += n;
+    else outros += n;
+  });
+  return { entries, oficiais, pracas, outros, total: oficiais + pracas };
+}
+
+function computeVeiculos(list){
+  const carrosPlacas = new Set();
+  const motosPlacas = new Set();
+  let carrosSemPlaca = 0;
+  let motosSemPlaca = 0;
+  list.forEach(l => {
+    const gv = l.viatura || {};
+    const temDadoGeral = gv.modelo || gv.km || gv.pat || gv.placa;
+    if(temDadoGeral){
+      const placa = (gv.placa || '').trim().toUpperCase();
+      if(placa) carrosPlacas.add(placa);
+      else carrosSemPlaca++;
+    }
+    (l.efetivo || []).forEach(p => {
+      if(p.viatura){
+        const placa = (p.viatura.placa || '').trim().toUpperCase();
+        if(placa) motosPlacas.add(placa);
+        else motosSemPlaca++;
+      }
+    });
+  });
+  const carros = carrosPlacas.size + carrosSemPlaca;
+  const motos = motosPlacas.size + motosSemPlaca;
+  return { carros, motos, total: carros + motos };
+}
+
+async function loadQuantData(){
+  try{
+    const key = quantType === 'daily' ? launchesKey(quantDate) : eventLaunchesKey(quantDate);
+    const r = await storageGet(key);
+    quantLaunches = (r && r.value) ? JSON.parse(r.value) : [];
+  }catch(e){ quantLaunches = []; }
+}
+
+function setQuantType(t){
+  quantType = t;
+  renderQuantView();
+}
+
+async function changeQuantDate(v){
+  quantDate = v;
+  await renderQuantView();
+}
+
+function quantCardHtml(title, q){
+  const rowsHtml = q.entries.length === 0
+    ? `<div class="empty">Nenhum efetivo lançado.</div>`
+    : q.entries.map(([pat, n]) => `
+        <div class="flex-between" style="padding:6px 0; border-bottom:1px solid var(--border);">
+          <span style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px;">${pat}</span>
+          <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${n}</span>
+        </div>
+      `).join('');
+  return `
+    <div class="card">
+      <div class="section-title">${title}</div>
+      ${rowsHtml}
+      <div class="flex-between" style="padding:8px 0 0; margin-top:8px; border-top:1px solid var(--border);">
+        <span style="color:var(--text); font-family:'Oswald',sans-serif; font-size:13px;">Oficiais</span>
+        <span style="color:var(--info); font-family:'JetBrains Mono', monospace; font-size:14px;">${q.oficiais}</span>
+      </div>
+      <div class="flex-between" style="padding:2px 0;">
+        <span style="color:var(--text); font-family:'Oswald',sans-serif; font-size:13px;">Praças</span>
+        <span style="color:var(--info); font-family:'JetBrains Mono', monospace; font-size:14px;">${q.pracas}</span>
+      </div>
+      ${q.outros > 0 ? `
+      <div class="flex-between" style="padding:2px 0;">
+        <span style="color:var(--muted); font-family:'Oswald',sans-serif; font-size:12.5px;">Outros (posto não padronizado)</span>
+        <span style="color:var(--muted); font-family:'JetBrains Mono', monospace; font-size:13.5px;">${q.outros}</span>
+      </div>` : ''}
+      <div class="flex-between" style="padding:8px 0 0; margin-top:6px; border-top:1px solid var(--border);">
+        <span style="color:var(--accent); font-family:'Oswald',sans-serif; font-size:15px;">Total</span>
+        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:17px;">${q.total}</span>
+      </div>
+    </div>
+  `;
+}
+
+function veiculosCardHtml(title, v){
+  return `
+    <div class="card">
+      <div class="section-title">${title}</div>
+      <div class="flex-between" style="padding:6px 0; border-bottom:1px solid var(--border);">
+        <span style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px;">4 rodas (geral)</span>
+        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${v.carros}</span>
+      </div>
+      <div class="flex-between" style="padding:6px 0;">
+        <span style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px;">2 rodas (motos)</span>
+        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${v.motos}</span>
+      </div>
+      <div class="flex-between" style="padding:8px 0 0; margin-top:6px; border-top:1px solid var(--border);">
+        <span style="color:var(--accent); font-family:'Oswald',sans-serif; font-size:15px;">Total</span>
+        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:17px;">${v.total}</span>
+      </div>
+    </div>
+  `;
+}
+
+async function renderQuantView(){
+  document.getElementById('viewQuant').innerHTML = '<div class="empty">Carregando...</div>';
+  await loadQuantData();
+  const visible = quantLaunches.filter(l => !l.removed);
+
+  let bodyHtml;
+  if(quantType === 'evento'){
+    const groups = {};
+    visible.forEach(l => {
+      const key = l.evento || '(sem nome de evento)';
+      if(!groups[key]) groups[key] = [];
+      groups[key].push(l);
+    });
+    const groupNames = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+    if(groupNames.length === 0){
+      bodyHtml = quantCardHtml('Por posto/ graduação', computeQuantitativo([])) + veiculosCardHtml('Viaturas utilizadas', computeVeiculos([]));
+    } else {
+      bodyHtml = groupNames.map(name => quantCardHtml(name, computeQuantitativo(groups[name])) + veiculosCardHtml(`Viaturas — ${name}`, computeVeiculos(groups[name]))).join('');
+      if(groupNames.length > 1){
+        bodyHtml += quantCardHtml('Total geral (todos os eventos)', computeQuantitativo(visible));
+        bodyHtml += veiculosCardHtml('Viaturas — Total geral (todos os eventos)', computeVeiculos(visible));
+      }
+    }
+  } else {
+    bodyHtml = quantCardHtml('Por posto/ graduação', computeQuantitativo(visible));
+    bodyHtml += veiculosCardHtml('Viaturas utilizadas', computeVeiculos(visible));
+  }
+
+  const html = `
+    <div class="card">
+      <label>Tipo de lançamento</label>
+      <div class="tabs" style="margin-bottom:12px;">
+        <div class="tab ${quantType==='daily' ? 'active' : ''}" onclick="setQuantType('daily')">Lançamento diário</div>
+        <div class="tab ${quantType==='evento' ? 'active' : ''}" onclick="setQuantType('evento')">Lançamento em Evento/ Operação</div>
+      </div>
+      <label>Data</label>
+      <input type="date" value="${quantDate}" onchange="changeQuantDate(this.value)" style="margin-bottom:0;" />
+    </div>
+
+    ${bodyHtml}
+
+    <button class="btn btn-accent btn-block" ${visible.length===0 ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''} onclick="generatePDFFromQuant()">
+      📄 Gerar relatório PDF (com quantitativo)
+    </button>
+  `;
+  document.getElementById('viewQuant').innerHTML = html;
+}
+
+async function generatePDFFromQuant(){
+  if(quantType === 'daily'){
+    await loadDateData(quantDate, true);
+  } else {
+    await loadEventoData(quantDate, true);
+  }
+  generatePDF();
 }
 
 
@@ -905,7 +1088,6 @@ function generatePDF(){
     line('Serviço diário', {bold:true, size:12.5, gap:16});
     line(`Comando: ${dc.comando || '-'}`, {size:10, gap:13});
     line(`Subcomando: ${dc.subcomando || '-'}`, {size:10, gap:13});
-    line(`Oficial de Operações: ${dc.oficialOperacoes || '-'}`, {size:10, gap:13});
     y += 6;
     doc.setDrawColor(230); doc.line(marginL, y, pageW - marginR, y); y += 18;
   }
@@ -984,6 +1166,58 @@ function generatePDF(){
     doc.setDrawColor(230); doc.line(marginL, y, pageW - marginR, y);
     y += 16;
   });
+
+  // Quantitativo de lançamentos (por posto/graduação)
+  checkPage(60);
+  const visibleForQuant = dayLaunches.filter(l => !l.removed);
+
+  function printQuantBlock(title, q){
+    checkPage(60);
+    line(title, {bold:true, size:12.5, gap:16});
+    q.entries.forEach(([pat, n]) => {
+      line(`${pat}: ${n}`, {size:10, gap:13});
+    });
+    y += 4;
+    line(`Oficiais: ${q.oficiais}`, {bold:true, size:10.5, gap:14});
+    line(`Praças: ${q.pracas}`, {bold:true, size:10.5, gap:14});
+    if(q.outros > 0){
+      line(`Outros (posto não padronizado): ${q.outros}`, {size:10, gap:13});
+    }
+    y += 2;
+    line(`Total: ${q.total}`, {bold:true, size:12, gap:16});
+    y += 6;
+  }
+
+  function printVeiculosBlock(title, v){
+    checkPage(40);
+    line(title, {bold:true, size:11, gap:14});
+    line(`4 rodas (geral): ${v.carros}`, {size:10, gap:13});
+    line(`2 rodas (motos): ${v.motos}`, {size:10, gap:13});
+    line(`Total de viaturas: ${v.total}`, {bold:true, size:10.5, gap:14});
+    y += 6;
+  }
+
+  if(activeBucketType === 'evento'){
+    const groups = {};
+    visibleForQuant.forEach(l => {
+      const key = l.evento || '(sem nome de evento)';
+      if(!groups[key]) groups[key] = [];
+      groups[key].push(l);
+    });
+    const groupNames = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+    line('QUANTITATIVO DE LANÇAMENTOS', {bold:true, size:12.5, gap:16});
+    groupNames.forEach(name => {
+      printQuantBlock(`Evento/ Operação: ${name}`, computeQuantitativo(groups[name]));
+      printVeiculosBlock(`Viaturas — ${name}`, computeVeiculos(groups[name]));
+    });
+    if(groupNames.length > 1){
+      printQuantBlock('Total geral (todos os eventos)', computeQuantitativo(visibleForQuant));
+      printVeiculosBlock('Viaturas — Total geral (todos os eventos)', computeVeiculos(visibleForQuant));
+    }
+  } else {
+    printQuantBlock('QUANTITATIVO DE LANÇAMENTOS', computeQuantitativo(visibleForQuant));
+    printVeiculosBlock('Viaturas utilizadas', computeVeiculos(visibleForQuant));
+  }
 
   checkPage(30);
   line(MOTTO, {bold:true, size:10.5, gap:14});
@@ -1244,8 +1478,7 @@ async function saveEditLaunch(){
 async function saveDailyCommand(){
   dailyCommandCurrent = {
     comando: document.getElementById('dcComando').value.trim(),
-    subcomando: document.getElementById('dcSubcomando').value.trim(),
-    oficialOperacoes: document.getElementById('dcOficial').value.trim()
+    subcomando: document.getElementById('dcSubcomando').value.trim()
   };
   await persistDailyCommand();
 }
