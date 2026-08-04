@@ -239,14 +239,16 @@ async function updateOfficerIndex(efetivoList){
     const re = (p.re || '').trim();
     const nome = p.nome.trim();
     const patente = (p.patente || '').trim();
+    const tel = (p.tel || '').trim();
     let existing = re ? officerIndex.find(o => (o.re || '').trim() === re) : null;
     if(!existing) existing = officerIndex.find(o => o.nome.trim().toLowerCase() === nome.toLowerCase());
     if(!existing){
-      officerIndex.push({ nome, re, patente });
+      officerIndex.push({ nome, re, patente, tel });
       changed = true;
     } else {
       if(patente && existing.patente !== patente){ existing.patente = patente; changed = true; }
       if(re && existing.re !== re){ existing.re = re; changed = true; }
+      if(tel && existing.tel !== tel){ existing.tel = tel; changed = true; }
       if(existing.nome !== nome){ existing.nome = nome; changed = true; }
     }
   });
@@ -475,6 +477,7 @@ function onNomeChangeNew(id, value){
   if(match){
     if(!r.patente) r.patente = match.patente || '';
     if(!r.re) r.re = match.re || '';
+    if(!r.tel) r.tel = match.tel || '';
   }
   renderEfetivoRows();
 }
@@ -702,6 +705,7 @@ function onNomeChangeEvento(id, value){
   if(match){
     if(!r.patente) r.patente = match.patente || '';
     if(!r.re) r.re = match.re || '';
+    if(!r.tel) r.tel = match.tel || '';
   }
   renderEfetivoRowsEvento();
 }
@@ -1077,13 +1081,16 @@ function renderBuscaView(){
     <div class="card">
       <label>Nome ou matrícula</label>
       <input list="policiaisConhecidos" id="buscaInput" placeholder="Ex: ERONILDO ou 1064720" />
-      <label>Período de busca</label>
-      <select id="buscaDias" style="margin-bottom:0;">
-        <option value="30">Últimos 30 dias</option>
-        <option value="60">Últimos 60 dias</option>
-        <option value="90">Últimos 90 dias</option>
-        <option value="180">Últimos 180 dias</option>
-      </select>
+      <div class="row">
+        <div>
+          <label>De</label>
+          <input type="date" id="buscaDe" value="${dateStrOffset(30)}" />
+        </div>
+        <div>
+          <label>Até</label>
+          <input type="date" id="buscaAte" value="${todayISO()}" style="margin-bottom:0;" />
+        </div>
+      </div>
       <button class="btn btn-accent btn-block" style="margin-top:12px;" onclick="runBusca()">🔎 Buscar</button>
     </div>
     <div id="buscaResultado"></div>
@@ -1098,16 +1105,31 @@ function dateStrOffset(days){
 
 async function runBusca(){
   const termo = document.getElementById('buscaInput').value.trim().toLowerCase();
-  const dias = parseInt(document.getElementById('buscaDias').value, 10);
+  const de = document.getElementById('buscaDe').value;
+  const ate = document.getElementById('buscaAte').value;
   const resEl = document.getElementById('buscaResultado');
   if(!termo){
     resEl.innerHTML = `<div class="empty">Digite um nome ou matrícula para buscar.</div>`;
     return;
   }
-  resEl.innerHTML = `<div class="empty">Buscando nos últimos ${dias} dias...</div>`;
+  if(!de || !ate || de > ate){
+    resEl.innerHTML = `<div class="empty">Verifique as datas — "De" precisa ser antes ou igual a "Até".</div>`;
+    return;
+  }
 
   const dateList = [];
-  for(let i = 0; i < dias; i++) dateList.push(dateStrOffset(i));
+  let cursor = new Date(de + 'T00:00:00');
+  const fim = new Date(ate + 'T00:00:00');
+  while(cursor <= fim && dateList.length < 400){
+    dateList.push(cursor.toISOString().slice(0, 10));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  if((fim - new Date(de + 'T00:00:00')) / 86400000 + 1 > 400){
+    resEl.innerHTML = `<div class="empty">Período muito longo (máx. 400 dias). Ajuste as datas.</div>`;
+    return;
+  }
+
+  resEl.innerHTML = `<div class="empty">Buscando entre ${fmtDateBR(de)} e ${fmtDateBR(ate)}...</div>`;
 
   const jobs = [];
   dateList.forEach(d => {
@@ -1144,15 +1166,43 @@ async function runBusca(){
     ${found.map(f => {
       const headerLine = [f.launch.evento, f.launch.gt, f.launch.cidade, f.launch.codigo].filter(Boolean).join(' - ');
       return `
-        <div class="card">
-          <div class="muted" style="margin-bottom:6px;">${fmtDateBR(f.date)} · ${f.tipo === 'evento' ? 'Evento/ Operação' : 'Serviço diário'}</div>
-          <div style="color:var(--text); font-family:'Inter',sans-serif; font-size:14px; font-weight:500;">${headerLine || '(sem cabeçalho)'}</div>
+        <div class="card" style="cursor:pointer;" onclick="goToLaunchFromBusca('${f.date}','${f.tipo}','${f.launch.id}')">
+          <div class="flex-between">
+            <div class="muted">${fmtDateBR(f.date)} · ${f.tipo === 'evento' ? 'Evento/ Operação' : 'Serviço diário'}</div>
+            <span style="color:var(--accent);">Abrir cadastro ›</span>
+          </div>
+          <div style="color:var(--text); font-family:'Inter',sans-serif; font-size:14px; font-weight:500; margin-top:4px;">${headerLine || '(sem cabeçalho)'}</div>
           <div class="muted" style="margin-top:4px;">${f.launch.inicio}–${f.launch.fim}</div>
           <div class="launch-preview" style="margin-top:8px;">${f.oficial.patente} ${f.oficial.re} ${f.oficial.nome}${f.oficial.motorista ? ' (motorista)' : ''}${f.oficial.tel ? '\nTel. ' + f.oficial.tel : ''}</div>
         </div>
       `;
     }).join('')}
   `;
+}
+
+async function goToLaunchFromBusca(date, tipo, launchId){
+  document.getElementById('tabNew').classList.remove('active');
+  document.getElementById('tabNewEvento').classList.remove('active');
+  document.getElementById('tabQuant').classList.remove('active');
+  document.getElementById('tabBusca').classList.remove('active');
+  document.getElementById('tabDay').classList.toggle('active', tipo !== 'evento');
+  document.getElementById('tabDayEvento').classList.toggle('active', tipo === 'evento');
+  document.getElementById('viewNew').classList.add('hidden');
+  document.getElementById('viewNewEvento').classList.add('hidden');
+  document.getElementById('viewQuant').classList.add('hidden');
+  document.getElementById('viewBusca').classList.add('hidden');
+  document.getElementById('viewDay').classList.toggle('hidden', tipo === 'evento');
+  document.getElementById('viewDayEvento').classList.toggle('hidden', tipo !== 'evento');
+  currentTab = tipo === 'evento' ? 'dayEvento' : 'day';
+
+  if(tipo === 'evento'){
+    await loadEventoData(date);
+    renderEventoListBody();
+  } else {
+    await loadDateData(date);
+    renderDayView();
+  }
+  openEditLaunch(launchId);
 }
 
 
@@ -1642,6 +1692,7 @@ function onNomeChangeEdit(id, value){
   if(match){
     if(!r.patente) r.patente = match.patente || '';
     if(!r.re) r.re = match.re || '';
+    if(!r.tel) r.tel = match.tel || '';
   }
   renderEfetivoRowsEdit();
 }
