@@ -68,6 +68,7 @@
       <div class="title">CADASTRO DE EFETIVO</div>
       <div class="sub" id="unitSub">9ª CIPM</div>
     </div>
+    <button class="gear" onclick="openConfigModal()" aria-label="Configurações">⚙️</button>
   </div>
 
   <div id="saveBanner"></div>
@@ -109,6 +110,8 @@ let activeBucketType = 'daily'; // 'daily' | 'evento' — bucket atualmente carr
 let selectedEventDate = todayISO(); // data selecionada na aba de relatório de evento/operação
 let eventIndex = []; // lista de nomes de eventos/operações já usados (sugestão no cadastro)
 let officerIndex = []; // [{ nome, re, patente }] — diretório de policiais já cadastrados alguma vez
+let vehicleIndex = []; // [{ placa, modelo, pat }] — diretório de viaturas já cadastradas alguma vez
+let editLockHour = 8; // horário (0-23) do dia seguinte até quando um lançamento pode ser editado/removido
 let efetivoRowsEvento = [];
 let quantType = 'daily'; // 'daily' | 'evento'
 let quantDate = todayISO();
@@ -171,45 +174,91 @@ async function loadAll(){
   await loadDateData(selectedDate);
   await loadEventIndex();
   await loadOfficerIndex();
+  await loadVehicleIndex();
+  await loadStaticCommand();
+  await loadEditLockHour();
   renderHeader();
   resetNewForm();
   renderDayView();
 }
 
 function launchesKey(date){ return 'launches:' + date; }
-function commandKey(date){ return 'daily-command:' + date; }
 function eventLaunchesKey(date){ return 'event-launches:' + date; }
 
 function activeBucketKey(){
   return activeBucketType === 'daily' ? launchesKey(selectedDate) : eventLaunchesKey(selectedEventDate);
 }
 
-async function loadDateData(date, withCommand = true){
+async function loadDateData(date){
   activeBucketType = 'daily';
   selectedDate = date;
-  const jobs = [
-    storageGet(launchesKey(date)).then(l => { launches = (l && l.value) ? JSON.parse(l.value) : []; }).catch(() => { launches = []; })
-  ];
-  if(withCommand){
-    jobs.push(
-      storageGet(commandKey(date)).then(c => { dailyCommandCurrent = (c && c.value) ? JSON.parse(c.value) : {}; }).catch(() => { dailyCommandCurrent = {}; })
-    );
-  }
-  await Promise.all(jobs);
+  try{
+    const l = await storageGet(launchesKey(date));
+    launches = (l && l.value) ? JSON.parse(l.value) : [];
+  }catch(e){ launches = []; }
 }
 
-async function loadEventoData(date, withCommand = true){
+async function loadEventoData(date){
   activeBucketType = 'evento';
   selectedEventDate = date;
-  const jobs = [
-    storageGet(eventLaunchesKey(date)).then(l => { launches = (l && l.value) ? JSON.parse(l.value) : []; }).catch(() => { launches = []; })
-  ];
-  if(withCommand){
-    jobs.push(
-      storageGet(commandKey(date)).then(c => { dailyCommandCurrent = (c && c.value) ? JSON.parse(c.value) : {}; }).catch(() => { dailyCommandCurrent = {}; })
-    );
-  }
-  await Promise.all(jobs);
+  try{
+    const l = await storageGet(eventLaunchesKey(date));
+    launches = (l && l.value) ? JSON.parse(l.value) : [];
+  }catch(e){ launches = []; }
+}
+
+async function loadStaticCommand(){
+  try{
+    const r = await storageGet('command-static');
+    dailyCommandCurrent = (r && r.value) ? JSON.parse(r.value) : {};
+  }catch(e){ dailyCommandCurrent = {}; }
+}
+
+async function loadEditLockHour(){
+  try{
+    const r = await storageGet('edit-lock-hour');
+    editLockHour = (r && r.value !== undefined && r.value !== null) ? JSON.parse(r.value) : 8;
+  }catch(e){ editLockHour = 8; }
+}
+
+async function persistEditLockHour(){
+  await saveKey('edit-lock-hour', editLockHour);
+}
+
+function isLaunchEditable(launch){
+  // o lançamento pode ser editado/removido até editLockHour:00 do dia seguinte à data do serviço
+  const limite = new Date(launch.date + 'T00:00:00');
+  limite.setDate(limite.getDate() + 1);
+  limite.setHours(editLockHour, 0, 0, 0);
+  return new Date() <= limite;
+}
+
+function openConfigModal(){
+  document.getElementById('modalRoot').innerHTML = `
+    <div class="modal-bg" onclick="if(event.target===this) closeConfigModal()">
+      <div class="modal">
+        <div class="modal-head">
+          <span class="section-title" style="margin-bottom:0;">Configurações</span>
+          <button class="close" onclick="closeConfigModal()">✕</button>
+        </div>
+        <label>Horário limite para editar/remover (dia seguinte)</label>
+        <select id="cfgEditLockHour" style="margin-bottom:0;">
+          ${Array.from({length: 24}, (_, h) => `<option value="${h}" ${h === editLockHour ? 'selected' : ''}>${String(h).padStart(2,'0')}:00</option>`).join('')}
+        </select>
+        <div class="muted" style="margin-top:8px; margin-bottom:16px;">
+          Lançamentos de um dia só podem ser editados ou removidos até esse horário do dia seguinte. Depois disso, ficam travados.
+        </div>
+        <button class="btn btn-accent btn-block" onclick="saveConfigModal()">Salvar</button>
+      </div>
+    </div>
+  `;
+}
+function closeConfigModal(){ document.getElementById('modalRoot').innerHTML = ''; }
+async function saveConfigModal(){
+  editLockHour = parseInt(document.getElementById('cfgEditLockHour').value, 10);
+  await persistEditLockHour();
+  closeConfigModal();
+  renderActiveListView();
 }
 
 async function loadEventIndex(){
@@ -224,6 +273,70 @@ async function loadOfficerIndex(){
     const r = await storageGet('officer-index');
     officerIndex = (r && r.value) ? JSON.parse(r.value) : [];
   }catch(e){ officerIndex = []; }
+}
+
+async function loadVehicleIndex(){
+  try{
+    const r = await storageGet('vehicle-index');
+    vehicleIndex = (r && r.value) ? JSON.parse(r.value) : [];
+  }catch(e){ vehicleIndex = []; }
+}
+
+function findVehicleByPlaca(placa){
+  const alvo = (placa || '').trim().toUpperCase();
+  if(!alvo) return null;
+  return vehicleIndex.find(v => v.placa.trim().toUpperCase() === alvo) || null;
+}
+
+async function updateVehicleIndex(...viaturas){
+  let changed = false;
+  viaturas.forEach(v => {
+    if(!v) return;
+    const placa = (v.placa || '').trim().toUpperCase();
+    if(!placa) return;
+    const modelo = (v.modelo || '').trim();
+    const pat = (v.pat || '').trim();
+    let existing = vehicleIndex.find(x => x.placa.trim().toUpperCase() === placa);
+    if(!existing){
+      vehicleIndex.push({ placa, modelo, pat });
+      changed = true;
+    } else {
+      if(modelo && existing.modelo !== modelo){ existing.modelo = modelo; changed = true; }
+      if(pat && existing.pat !== pat){ existing.pat = pat; changed = true; }
+    }
+  });
+  if(changed){ await saveKey('vehicle-index', vehicleIndex); }
+}
+
+function onPlacaChangeGeral(placaId, modeloId, patId){
+  const placa = document.getElementById(placaId).value;
+  const match = findVehicleByPlaca(placa);
+  if(match){
+    const modeloEl = document.getElementById(modeloId);
+    const patEl = document.getElementById(patId);
+    if(modeloEl && !modeloEl.value) modeloEl.value = match.modelo || '';
+    if(patEl && !patEl.value) patEl.value = match.pat || '';
+  }
+}
+
+function onPlacaChangeIndividual(id, placaValue, updateFnName){
+  const map = {
+    updateRowViatura: { rows: () => efetivoRows, render: renderEfetivoRows, setPlaca: updateRowViatura },
+    updateRowViaturaEventoNew: { rows: () => efetivoRowsEvento, render: renderEfetivoRowsEvento, setPlaca: updateRowViaturaEventoNew },
+    updateRowViaturaEdit: { rows: () => efetivoRowsEdit, render: renderEfetivoRowsEdit, setPlaca: updateRowViaturaEdit }
+  };
+  const ctx = map[updateFnName];
+  if(!ctx) return;
+  ctx.setPlaca(id, 'placa', placaValue);
+  const row = ctx.rows().find(r => r.id === id);
+  if(row && row.viatura){
+    const match = findVehicleByPlaca(placaValue);
+    if(match){
+      if(!row.viatura.modelo) row.viatura.modelo = match.modelo || '';
+      if(!row.viatura.pat) row.viatura.pat = match.pat || '';
+    }
+  }
+  ctx.render();
 }
 
 function findOfficerByName(nome){
@@ -267,7 +380,7 @@ async function persistLaunches(){
   await saveKey(activeBucketKey(), launches);
 }
 async function persistDailyCommand(){
-  await saveKey(commandKey(selectedDate), dailyCommandCurrent);
+  await saveKey('command-static', dailyCommandCurrent);
 }
 
 async function saveKey(key, value, attempt = 1){
@@ -365,14 +478,14 @@ function renderNewForm(){
 
     <div class="card">
       <div class="section-title">VIATURA</div>
+      <label>Placa</label>
+      <input list="placasConhecidas" id="vPlaca" placeholder="Ex: SEG3G12" onchange="onPlacaChangeGeral('vPlaca','vModelo','vPat')" />
       <label>Modelo</label>
       <input id="vModelo" placeholder="Ex: DUSTER" />
       <div class="row">
         <div><label>KM</label><input id="vKm" placeholder="Ex: 65097" /></div>
         <div><label>PAT</label><input id="vPat" placeholder="Ex: 1300062" /></div>
       </div>
-      <label>Placa</label>
-      <input id="vPlaca" placeholder="Ex: SEG3G12" style="margin-bottom:10px;" />
       <label>Armado com o cartão?</label>
       <div style="display:flex; gap:16px; margin-bottom:0;">
         <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
@@ -422,14 +535,14 @@ function renderEfetivoRows(){
       </button>
       ${r.viatura ? `
         <div style="margin-top:10px;">
+          <label>Placa</label>
+          <input list="placasConhecidas" value="${r.viatura.placa || ''}" onchange="onPlacaChangeIndividual('${r.id}',this.value,'updateRowViatura')" />
           <label>Modelo</label>
           <input value="${r.viatura.modelo || ''}" placeholder="Ex: CG 160" onchange="updateRowViatura('${r.id}','modelo',this.value)" />
           <div class="row">
             <div><label>KM</label><input value="${r.viatura.km || ''}" onchange="updateRowViatura('${r.id}','km',this.value)" /></div>
             <div><label>PAT</label><input value="${r.viatura.pat || ''}" onchange="updateRowViatura('${r.id}','pat',this.value)" /></div>
           </div>
-          <label>Placa</label>
-          <input value="${r.viatura.placa || ''}" onchange="updateRowViatura('${r.id}','placa',this.value)" style="margin-bottom:10px;" />
           <label>Armado com o cartão?</label>
           <div style="display:flex; gap:16px; margin-bottom:0;">
             <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
@@ -461,6 +574,9 @@ function renderEfetivoRows(){
     </datalist>
     <datalist id="policiaisConhecidos">
       ${officerIndex.map(o => `<option value="${o.nome}"></option>`).join('')}
+    </datalist>
+    <datalist id="placasConhecidas">
+      ${vehicleIndex.map(v => `<option value="${v.placa}"></option>`).join('')}
     </datalist>
   `;
 }
@@ -552,12 +668,13 @@ async function saveLaunch(){
 
   setBtnSaving('btnSaveLaunch', true);
   if(data !== selectedDate || activeBucketType !== 'daily'){
-    await loadDateData(data, false);
+    await loadDateData(data);
   }
   launches.push(launch);
   selectedDate = data;
   await persistLaunches();
   await updateOfficerIndex(launch.efetivo);
+  await updateVehicleIndex(launch.viatura, ...launch.efetivo.map(p => p.viatura));
   lastHeader = { gt, cidade, codigo };
   resetNewForm();
   switchTab('day');
@@ -611,14 +728,14 @@ function renderEventoForm(){
 
     <div class="card">
       <div class="section-title">VIATURA</div>
+      <label>Placa</label>
+      <input list="placasConhecidas" id="opvPlaca" placeholder="Ex: SEG3G12" onchange="onPlacaChangeGeral('opvPlaca','opvModelo','opvPat')" />
       <label>Modelo</label>
       <input id="opvModelo" placeholder="Ex: DUSTER" />
       <div class="row">
         <div><label>KM</label><input id="opvKm" placeholder="Ex: 65097" /></div>
         <div><label>PAT</label><input id="opvPat" placeholder="Ex: 1300062" /></div>
       </div>
-      <label>Placa</label>
-      <input id="opvPlaca" placeholder="Ex: SEG3G12" style="margin-bottom:10px;" />
       <label>Armado com o cartão?</label>
       <div style="display:flex; gap:16px; margin-bottom:0;">
         <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
@@ -668,14 +785,14 @@ function renderEfetivoRowsEvento(){
       </button>
       ${r.viatura ? `
         <div style="margin-top:10px;">
+          <label>Placa</label>
+          <input list="placasConhecidas" value="${r.viatura.placa || ''}" onchange="onPlacaChangeIndividual('${r.id}',this.value,'updateRowViaturaEventoNew')" />
           <label>Modelo</label>
           <input value="${r.viatura.modelo || ''}" placeholder="Ex: CG 160" onchange="updateRowViaturaEventoNew('${r.id}','modelo',this.value)" />
           <div class="row">
             <div><label>KM</label><input value="${r.viatura.km || ''}" onchange="updateRowViaturaEventoNew('${r.id}','km',this.value)" /></div>
             <div><label>PAT</label><input value="${r.viatura.pat || ''}" onchange="updateRowViaturaEventoNew('${r.id}','pat',this.value)" /></div>
           </div>
-          <label>Placa</label>
-          <input value="${r.viatura.placa || ''}" onchange="updateRowViaturaEventoNew('${r.id}','placa',this.value)" style="margin-bottom:10px;" />
           <label>Armado com o cartão?</label>
           <div style="display:flex; gap:16px; margin-bottom:0;">
             <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
@@ -771,12 +888,13 @@ async function saveLaunchEvento(){
 
   setBtnSaving('btnSaveLaunchEvento', true);
   if(data !== selectedEventDate || activeBucketType !== 'evento'){
-    await loadEventoData(data, false);
+    await loadEventoData(data);
   }
   launches.push(launch);
   await persistLaunches();
   await addEventToIndex(evento);
   await updateOfficerIndex(launch.efetivo);
+  await updateVehicleIndex(launch.viatura, ...launch.efetivo.map(p => p.viatura));
   resetEventoForm();
   switchTab('dayEvento');
 }
@@ -1068,9 +1186,9 @@ async function renderQuantView(){
 
 async function generatePDFFromQuant(){
   if(quantType === 'daily'){
-    await loadDateData(quantDate, true);
+    await loadDateData(quantDate);
   } else {
-    await loadEventoData(quantDate, true);
+    await loadEventoData(quantDate);
   }
   generatePDF();
 }
@@ -1222,18 +1340,24 @@ function launchCard(l){
     ? `\n\nVIATURA: ${l.viatura.modelo || '-'}\nKM: ${l.viatura.km || '-'}\nPAT: ${l.viatura.pat || '-'}\nPLACA: ${l.viatura.placa || '-'}${l.viatura.armadoCartao ? `\nArmado com o cartão: ${l.viatura.armadoCartao === 'sim' ? 'Sim' : 'Não'}` : ''}`
     : '';
   const preview = `${headerLine}\n\n📆 Data: ${fmtDatePT(l.date)}\n⏰ Horário: ${l.inicio} às ${l.fim}\n\nEFETIVO:\n\n${efetivoTxt}${viaturaTxt}`;
+  const editable = isLaunchEditable(l);
   return `
     <div class="card">
       <div class="flex-between">
         <span class="muted">${l.inicio}–${l.fim} · ${l.efetivo.length} policial(is) ${l.edited ? '<span class="badge" style="background:var(--info); color:#0c1a26; margin-left:6px;">✏️ Editado</span>' : ''} ${l.gcoi ? '<span class="badge" style="background:var(--ok); color:#0c1a26; margin-left:6px;">GCOI ✓</span>' : ''}</span>
         <div style="display:flex; gap:8px;">
-          <button class="btn btn-ghost" onclick="openEditLaunch('${l.id}')">Editar</button>
-          <button class="btn btn-danger" onclick="deleteLaunch('${l.id}')">Remover</button>
+          ${editable ? `
+            <button class="btn btn-ghost" onclick="openEditLaunch('${l.id}')">Editar</button>
+            <button class="btn btn-danger" onclick="deleteLaunch('${l.id}')">Remover</button>
+          ` : `<span class="muted" style="font-size:11px;">🔒 Prazo de edição encerrado</span>`}
         </div>
       </div>
       <div class="launch-preview">${preview}</div>
       <button class="btn btn-accent btn-block" style="margin-top:10px;" onclick="openGcoi('${l.id}')">
         📋 CADASTRO GCOI ${l.gcoi ? '(reabrir)' : ''}
+      </button>
+      <button class="btn btn-ghost btn-block" style="margin-top:8px; background:#1f3d2e; border-color:#2f5c44; color:#7fd99a;" onclick="shareWhatsApp('${l.id}')">
+        💬 Compartilhar via WhatsApp
       </button>
     </div>
   `;
@@ -1257,9 +1381,38 @@ async function openGcoi(id){
   window.open(GCOI_URL, '_blank');
 }
 
+function shareWhatsApp(id){
+  const l = launches.find(x => x.id === id);
+  if(!l) return;
+
+  const headerLine = [l.evento, l.gt, l.cidade, l.codigo].filter(Boolean).join(' - ');
+  const dc = dailyCommandCurrent || {};
+
+  const efetivoTxt = l.efetivo.map(p => {
+    const icone = p.sexo === 'F' ? '👮🏻‍♀️' : '👮🏻‍♂️';
+    let bloco = `${icone} ${p.patente} ${p.re} ${p.nome}`;
+    if(p.tel) bloco += `\nTel. ${p.tel}`;
+    return bloco;
+  }).join('\n\n');
+
+  const gv = l.viatura || {};
+  const temViaturaGeral = gv.modelo || gv.km || gv.pat || gv.placa;
+  const viaturaTxt = temViaturaGeral
+    ? `\n\nVIATURA: ${gv.modelo || '-'}\nKM: ${gv.km || '-'}\nPAT: ${gv.pat || '-'}\nPLACA.: ${gv.placa || '-'}`
+    : '';
+
+  const texto = `🚨 CADASTRO DE EFETIVO 🚨\n\n${headerLine}\n\n📆 Data: ${fmtDatePT(l.date)}\n⏰ horário: ${l.inicio} às ${l.fim}\n\nEFETIVO:\n\n${efetivoTxt}${viaturaTxt}\n\nGCOI: ${l.gcoi ? '✅' : '❌'}\n\nCMD: ${dc.comando || '-'}\nSUBCMD: ${dc.subcomando || '-'}\n\n🌵 ${MOTTO}\n☀️`;
+
+  window.open(`https://wa.me/?text=${encodeURIComponent(texto)}`, '_blank');
+}
+
 async function deleteLaunch(id){
   const l = launches.find(x => x.id === id);
   if(!l) return;
+  if(!isLaunchEditable(l)){
+    alert('O prazo para remover este lançamento já encerrou.');
+    return;
+  }
   const reason = prompt('Informe o motivo da remoção deste lançamento (obrigatório). Ele continuará no relatório PDF, com essa justificativa.');
   if(reason === null) return; // cancelado
   if(!reason.trim()){
@@ -1561,6 +1714,10 @@ let editingLaunchId = null;
 function openEditLaunch(id){
   const l = launches.find(x => x.id === id);
   if(!l) return;
+  if(!isLaunchEditable(l)){
+    alert('O prazo para editar este lançamento já encerrou.');
+    return;
+  }
   editingLaunchId = id;
   efetivoRowsEdit = l.efetivo.map(p => ({...p, id: uid(), viatura: p.viatura ? {...p.viatura} : null}));
 
@@ -1598,14 +1755,14 @@ function openEditLaunch(id){
         <button class="btn btn-ghost btn-block" onclick="addEfetivoRowEdit()">+ policial</button>
 
         <div class="section-title" style="margin-top:6px;">VIATURA</div>
+        <label>Placa</label>
+        <input list="placasConhecidas" id="evPlaca" value="${l.viatura.placa}" onchange="onPlacaChangeGeral('evPlaca','evModelo','evPat')" />
         <label>Modelo</label>
         <input id="evModelo" value="${l.viatura.modelo}" />
         <div class="row">
           <div><label>KM</label><input id="evKm" value="${l.viatura.km}" /></div>
           <div><label>PAT</label><input id="evPat" value="${l.viatura.pat}" /></div>
         </div>
-        <label>Placa</label>
-        <input id="evPlaca" value="${l.viatura.placa}" style="margin-bottom:10px;" />
         <label>Armado com o cartão?</label>
         <div style="display:flex; gap:16px; margin-bottom:0;">
           <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
@@ -1655,14 +1812,14 @@ function renderEfetivoRowsEdit(){
       </button>
       ${r.viatura ? `
         <div style="margin-top:10px;">
+          <label>Placa</label>
+          <input list="placasConhecidas" value="${r.viatura.placa || ''}" onchange="onPlacaChangeIndividual('${r.id}',this.value,'updateRowViaturaEdit')" />
           <label>Modelo</label>
           <input value="${r.viatura.modelo || ''}" placeholder="Ex: CG 160" onchange="updateRowViaturaEdit('${r.id}','modelo',this.value)" />
           <div class="row">
             <div><label>KM</label><input value="${r.viatura.km || ''}" onchange="updateRowViaturaEdit('${r.id}','km',this.value)" /></div>
             <div><label>PAT</label><input value="${r.viatura.pat || ''}" onchange="updateRowViaturaEdit('${r.id}','pat',this.value)" /></div>
           </div>
-          <label>Placa</label>
-          <input value="${r.viatura.placa || ''}" onchange="updateRowViaturaEdit('${r.id}','placa',this.value)" style="margin-bottom:10px;" />
           <label>Armado com o cartão?</label>
           <div style="display:flex; gap:16px; margin-bottom:0;">
             <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; margin-bottom:0;">
@@ -1777,7 +1934,7 @@ async function saveEditLaunch(){
     launches = launches.filter(x => x.id !== l.id);
     if(wasEvento){
       await saveKey(eventLaunchesKey(oldDate), launches);
-      await loadEventoData(l.date, false);
+      await loadEventoData(l.date);
       launches.push(l);
       await persistLaunches();
     } else {
@@ -1794,6 +1951,7 @@ async function saveEditLaunch(){
     await addEventToIndex(l.evento);
   }
   await updateOfficerIndex(l.efetivo);
+  await updateVehicleIndex(l.viatura, ...l.efetivo.map(p => p.viatura));
 
   closeEditModal();
   renderActiveListView();
