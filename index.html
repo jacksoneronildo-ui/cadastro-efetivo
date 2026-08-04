@@ -7,6 +7,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.16.0/firebase-app-compat.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.16.0/firebase-firestore-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
   :root{
@@ -76,7 +77,8 @@
     <div class="tab" id="tabNewEvento" onclick="switchTab('newEvento')">Lan. em Evento/ Operação</div>
     <div class="tab" id="tabDay" onclick="switchTab('day')">Relatório de serviços diários</div>
     <div class="tab" id="tabDayEvento" onclick="switchTab('dayEvento')">Relatório de Evento/ Operação</div>
-    <div class="tab" id="tabQuant" onclick="switchTab('quant')" style="grid-column: span 2;">Quantitativo de Lançamentos</div>
+    <div class="tab" id="tabQuant" onclick="switchTab('quant')">Quantitativo de Lançamentos</div>
+    <div class="tab" id="tabBusca" onclick="switchTab('busca')">Buscar Policial</div>
   </div>
 
   <div id="viewNew"></div>
@@ -84,6 +86,7 @@
   <div id="viewDay" class="hidden"></div>
   <div id="viewDayEvento" class="hidden"></div>
   <div id="viewQuant" class="hidden"></div>
+  <div id="viewBusca" class="hidden"></div>
 </div>
 
 <div id="modalRoot"></div>
@@ -105,6 +108,7 @@ let dailyCommandCurrent = {}; // { comando, subcomando, oficialOperacoes } — r
 let activeBucketType = 'daily'; // 'daily' | 'evento' — bucket atualmente carregado em `launches`
 let selectedEventDate = todayISO(); // data selecionada na aba de relatório de evento/operação
 let eventIndex = []; // lista de nomes de eventos/operações já usados (sugestão no cadastro)
+let officerIndex = []; // [{ nome, re, patente }] — diretório de policiais já cadastrados alguma vez
 let efetivoRowsEvento = [];
 let quantType = 'daily'; // 'daily' | 'evento'
 let quantDate = todayISO();
@@ -124,6 +128,11 @@ const firebaseConfig = {
 };
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
+db.enablePersistence({ synchronizeTabs: true }).catch((err) => {
+  // Falha comum: múltiplas abas abertas simultaneamente, ou navegador sem suporte.
+  // O app continua funcionando normalmente, só sem cache offline nesse caso.
+  console.warn('Persistência offline não ativada:', err.code);
+});
 const KV_COLLECTION = 'kv';
 
 async function storageGet(key){
@@ -161,6 +170,7 @@ async function storageSet(key, value){
 async function loadAll(){
   await loadDateData(selectedDate);
   await loadEventIndex();
+  await loadOfficerIndex();
   renderHeader();
   resetNewForm();
   renderDayView();
@@ -207,6 +217,40 @@ async function loadEventIndex(){
     const r = await storageGet('event-index');
     eventIndex = (r && r.value) ? JSON.parse(r.value) : [];
   }catch(e){ eventIndex = []; }
+}
+
+async function loadOfficerIndex(){
+  try{
+    const r = await storageGet('officer-index');
+    officerIndex = (r && r.value) ? JSON.parse(r.value) : [];
+  }catch(e){ officerIndex = []; }
+}
+
+function findOfficerByName(nome){
+  const alvo = (nome || '').trim().toLowerCase();
+  if(!alvo) return null;
+  return officerIndex.find(o => o.nome.trim().toLowerCase() === alvo) || null;
+}
+
+async function updateOfficerIndex(efetivoList){
+  let changed = false;
+  (efetivoList || []).forEach(p => {
+    if(!p.nome || !p.nome.trim()) return;
+    const re = (p.re || '').trim();
+    const nome = p.nome.trim();
+    const patente = (p.patente || '').trim();
+    let existing = re ? officerIndex.find(o => (o.re || '').trim() === re) : null;
+    if(!existing) existing = officerIndex.find(o => o.nome.trim().toLowerCase() === nome.toLowerCase());
+    if(!existing){
+      officerIndex.push({ nome, re, patente });
+      changed = true;
+    } else {
+      if(patente && existing.patente !== patente){ existing.patente = patente; changed = true; }
+      if(re && existing.re !== re){ existing.re = re; changed = true; }
+      if(existing.nome !== nome){ existing.nome = nome; changed = true; }
+    }
+  });
+  if(changed){ await saveKey('officer-index', officerIndex); }
 }
 
 async function addEventToIndex(name){
@@ -262,15 +306,18 @@ function switchTab(t){
   document.getElementById('tabDay').classList.toggle('active', t==='day');
   document.getElementById('tabDayEvento').classList.toggle('active', t==='dayEvento');
   document.getElementById('tabQuant').classList.toggle('active', t==='quant');
+  document.getElementById('tabBusca').classList.toggle('active', t==='busca');
   document.getElementById('viewNew').classList.toggle('hidden', t!=='new');
   document.getElementById('viewNewEvento').classList.toggle('hidden', t!=='newEvento');
   document.getElementById('viewDay').classList.toggle('hidden', t!=='day');
   document.getElementById('viewDayEvento').classList.toggle('hidden', t!=='dayEvento');
   document.getElementById('viewQuant').classList.toggle('hidden', t!=='quant');
+  document.getElementById('viewBusca').classList.toggle('hidden', t!=='busca');
   if(t==='day'){ activeBucketType='daily'; loadDateData(selectedDate).then(renderDayView); }
   if(t==='dayEvento'){ activeBucketType='evento'; renderEventoListView(); }
   if(t==='newEvento' && !document.getElementById('opGt')) resetEventoForm();
   if(t==='quant') renderQuantView();
+  if(t==='busca' && !document.getElementById('buscaInput')) renderBuscaView();
 }
 
 // ---------- NOVO LANÇAMENTO ----------
@@ -361,7 +408,7 @@ function renderEfetivoRows(){
       </div>
       <div class="row">
         <div><label>Matrícula</label><input value="${r.re}" placeholder="Ex: 1064720" onchange="updateRow('${r.id}','re',this.value)" /></div>
-        <div><label>Nome</label><input value="${r.nome}" placeholder="Ex: ERONILDO" onchange="updateRow('${r.id}','nome',this.value)" /></div>
+        <div><label>Nome</label><input list="policiaisConhecidos" value="${r.nome}" placeholder="Ex: ERONILDO" onchange="onNomeChangeNew('${r.id}',this.value)" /></div>
       </div>
       <label>Telefone</label>
       <input value="${r.tel}" placeholder="Ex: 87 98123-4871" onchange="updateRow('${r.id}','tel',this.value)" style="margin-bottom:0;" />
@@ -410,12 +457,26 @@ function renderEfetivoRows(){
       <option value="TEN CEL PM"></option>
       <option value="CEL PM"></option>
     </datalist>
+    <datalist id="policiaisConhecidos">
+      ${officerIndex.map(o => `<option value="${o.nome}"></option>`).join('')}
+    </datalist>
   `;
 }
 
 function updateRow(id, field, value){
   const r = efetivoRows.find(x => x.id === id);
   if(r) r[field] = value;
+}
+function onNomeChangeNew(id, value){
+  const r = efetivoRows.find(x => x.id === id);
+  if(!r) return;
+  r.nome = value;
+  const match = findOfficerByName(value);
+  if(match){
+    if(!r.patente) r.patente = match.patente || '';
+    if(!r.re) r.re = match.re || '';
+  }
+  renderEfetivoRows();
 }
 function updateRowChecked(id, field, value){
   const r = efetivoRows.find(x => x.id === id);
@@ -493,6 +554,7 @@ async function saveLaunch(){
   launches.push(launch);
   selectedDate = data;
   await persistLaunches();
+  await updateOfficerIndex(launch.efetivo);
   lastHeader = { gt, cidade, codigo };
   resetNewForm();
   switchTab('day');
@@ -591,7 +653,7 @@ function renderEfetivoRowsEvento(){
       </div>
       <div class="row">
         <div><label>Matrícula</label><input value="${r.re}" placeholder="Ex: 1064720" onchange="updateRowEvento('${r.id}','re',this.value)" /></div>
-        <div><label>Nome</label><input value="${r.nome}" placeholder="Ex: ERONILDO" onchange="updateRowEvento('${r.id}','nome',this.value)" /></div>
+        <div><label>Nome</label><input list="policiaisConhecidos" value="${r.nome}" placeholder="Ex: ERONILDO" onchange="onNomeChangeEvento('${r.id}',this.value)" /></div>
       </div>
       <label>Telefone</label>
       <input value="${r.tel}" placeholder="Ex: 87 98123-4871" onchange="updateRowEvento('${r.id}','tel',this.value)" style="margin-bottom:0;" />
@@ -631,6 +693,17 @@ function renderEfetivoRowsEvento(){
 function updateRowEvento(id, field, value){
   const r = efetivoRowsEvento.find(x => x.id === id);
   if(r) r[field] = value;
+}
+function onNomeChangeEvento(id, value){
+  const r = efetivoRowsEvento.find(x => x.id === id);
+  if(!r) return;
+  r.nome = value;
+  const match = findOfficerByName(value);
+  if(match){
+    if(!r.patente) r.patente = match.patente || '';
+    if(!r.re) r.re = match.re || '';
+  }
+  renderEfetivoRowsEvento();
 }
 function updateRowCheckedEvento(id, field, value){
   const r = efetivoRowsEvento.find(x => x.id === id);
@@ -699,6 +772,7 @@ async function saveLaunchEvento(){
   launches.push(launch);
   await persistLaunches();
   await addEventToIndex(evento);
+  await updateOfficerIndex(launch.efetivo);
   resetEventoForm();
   switchTab('dayEvento');
 }
@@ -715,6 +789,9 @@ function renderDayView(){
       <input type="date" id="dSelect" value="${selectedDate}" onchange="changeDate(this.value)" />
       <button class="btn btn-accent btn-block" ${allDayLaunches.length===0 ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''} onclick="generatePDF()">
         📄 Gerar relatório PDF do dia (${allDayLaunches.length})
+      </button>
+      <button class="btn btn-ghost btn-block" style="margin-top:8px;" ${allDayLaunches.length===0 ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''} onclick="generateXLSX()">
+        📊 Exportar planilha (Excel)
       </button>
     </div>
 
@@ -768,6 +845,9 @@ function renderEventoListBody(){
       <input type="date" id="eSelect" value="${selectedEventDate}" onchange="changeEventoDate(this.value)" />
       <button class="btn btn-accent btn-block" ${allLaunches.length===0 ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''} onclick="generatePDF()">
         📄 Gerar relatório PDF do dia (${allLaunches.length})
+      </button>
+      <button class="btn btn-ghost btn-block" style="margin-top:8px;" ${allLaunches.length===0 ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''} onclick="generateXLSX()">
+        📊 Exportar planilha (Excel)
       </button>
     </div>
     <div class="section-title">Lançamentos de Evento/ Operação — ${fmtDateBR(selectedEventDate)}</div>
@@ -991,6 +1071,90 @@ async function generatePDFFromQuant(){
   generatePDF();
 }
 
+// ---------- BUSCAR POLICIAL ----------
+function renderBuscaView(){
+  document.getElementById('viewBusca').innerHTML = `
+    <div class="card">
+      <label>Nome ou matrícula</label>
+      <input list="policiaisConhecidos" id="buscaInput" placeholder="Ex: ERONILDO ou 1064720" />
+      <label>Período de busca</label>
+      <select id="buscaDias" style="margin-bottom:0;">
+        <option value="30">Últimos 30 dias</option>
+        <option value="60">Últimos 60 dias</option>
+        <option value="90">Últimos 90 dias</option>
+        <option value="180">Últimos 180 dias</option>
+      </select>
+      <button class="btn btn-accent btn-block" style="margin-top:12px;" onclick="runBusca()">🔎 Buscar</button>
+    </div>
+    <div id="buscaResultado"></div>
+  `;
+}
+
+function dateStrOffset(days){
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+async function runBusca(){
+  const termo = document.getElementById('buscaInput').value.trim().toLowerCase();
+  const dias = parseInt(document.getElementById('buscaDias').value, 10);
+  const resEl = document.getElementById('buscaResultado');
+  if(!termo){
+    resEl.innerHTML = `<div class="empty">Digite um nome ou matrícula para buscar.</div>`;
+    return;
+  }
+  resEl.innerHTML = `<div class="empty">Buscando nos últimos ${dias} dias...</div>`;
+
+  const dateList = [];
+  for(let i = 0; i < dias; i++) dateList.push(dateStrOffset(i));
+
+  const jobs = [];
+  dateList.forEach(d => {
+    jobs.push(storageGet(launchesKey(d)).then(r => ({ date: d, tipo: 'daily', arr: JSON.parse(r.value) })).catch(() => null));
+    jobs.push(storageGet(eventLaunchesKey(d)).then(r => ({ date: d, tipo: 'evento', arr: JSON.parse(r.value) })).catch(() => null));
+  });
+
+  const results = await Promise.all(jobs);
+  const found = [];
+
+  results.forEach(item => {
+    if(!item) return;
+    item.arr.forEach(l => {
+      if(l.removed) return;
+      (l.efetivo || []).forEach(p => {
+        const nomeMatch = (p.nome || '').toLowerCase().includes(termo);
+        const reMatch = (p.re || '').toLowerCase().includes(termo);
+        if(nomeMatch || reMatch){
+          found.push({ launch: l, tipo: item.tipo, date: item.date, oficial: p });
+        }
+      });
+    });
+  });
+
+  if(found.length === 0){
+    resEl.innerHTML = `<div class="empty">Nenhum lançamento encontrado para "${termo}" nesse período.</div>`;
+    return;
+  }
+
+  found.sort((a, b) => b.launch.createdAt - a.launch.createdAt);
+
+  resEl.innerHTML = `
+    <div class="section-title">${found.length} resultado(s) encontrado(s)</div>
+    ${found.map(f => {
+      const headerLine = [f.launch.evento, f.launch.gt, f.launch.cidade, f.launch.codigo].filter(Boolean).join(' - ');
+      return `
+        <div class="card">
+          <div class="muted" style="margin-bottom:6px;">${fmtDateBR(f.date)} · ${f.tipo === 'evento' ? 'Evento/ Operação' : 'Serviço diário'}</div>
+          <div style="color:var(--text); font-family:'Inter',sans-serif; font-size:14px; font-weight:500;">${headerLine || '(sem cabeçalho)'}</div>
+          <div class="muted" style="margin-top:4px;">${f.launch.inicio}–${f.launch.fim}</div>
+          <div class="launch-preview" style="margin-top:8px;">${f.oficial.patente} ${f.oficial.re} ${f.oficial.nome}${f.oficial.motorista ? ' (motorista)' : ''}${f.oficial.tel ? '\nTel. ' + f.oficial.tel : ''}</div>
+        </div>
+      `;
+    }).join('')}
+  `;
+}
+
 
 async function changeDate(v){
   selectedDate = v;
@@ -1060,6 +1224,50 @@ async function deleteLaunch(id){
 }
 
 // ---------- PDF ----------
+// ---------- EXCEL ----------
+function generateXLSX(){
+  const list = activeBucketType === 'evento' ? sortGroupedByEvento(launches) : [...launches].sort((a,b) => a.createdAt - b.createdAt);
+  if(list.length === 0) return;
+
+  const rows = [];
+  list.forEach(l => {
+    const gv = l.viatura || {};
+    (l.efetivo || []).forEach(p => {
+      rows.push({
+        'Data': fmtDateBR(l.date),
+        'Tipo': l.evento ? 'Evento/ Operação' : 'Serviço diário',
+        'Evento/ Operação': l.evento || '',
+        'GT/ Tipo de serviço': l.gt || '',
+        'Cidade': l.cidade || '',
+        'Prefixo': l.codigo || '',
+        'Início': l.inicio || '',
+        'Fim': l.fim || '',
+        'Posto/ Graduação': p.patente || '',
+        'Matrícula': p.re || '',
+        'Nome': p.nome || '',
+        'Telefone': p.tel || '',
+        'Motorista': p.motorista ? 'Sim' : 'Não',
+        'Viatura individual (moto)': p.viatura ? `${p.viatura.modelo || ''} - ${p.viatura.placa || ''}` : '',
+        'Armado c/ cartão (individual)': p.viatura ? (p.viatura.armadoCartao === 'sim' ? 'Sim' : (p.viatura.armadoCartao === 'nao' ? 'Não' : '')) : '',
+        'Observação policial': p.observacao || '',
+        'Viatura geral': gv.modelo ? `${gv.modelo} - ${gv.placa || ''}` : '',
+        'Armado c/ cartão (geral)': gv.armadoCartao === 'sim' ? 'Sim' : (gv.armadoCartao === 'nao' ? 'Não' : ''),
+        'Editado': l.edited ? 'Sim' : 'Não',
+        'Removido': l.removed ? 'Sim' : 'Não',
+        'Motivo remoção': l.removedReason || '',
+        'CADASTRO GCOI': l.gcoi ? 'Preenchido' : ''
+      });
+    });
+  });
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Lançamentos');
+
+  const fileSuffix = activeBucketType === 'evento' ? `evento_${selectedEventDate}` : selectedDate;
+  XLSX.writeFile(wb, `mapa-de-forca_${fileSuffix}.xlsx`);
+}
+
 function generatePDF(){
   const dayLaunches = activeBucketType === 'evento' ? sortGroupedByEvento(launches) : [...launches].sort((a,b) => a.createdAt - b.createdAt);
   if(dayLaunches.length === 0) return;
@@ -1385,7 +1593,7 @@ function renderEfetivoRowsEdit(){
       </div>
       <div class="row">
         <div><label>Matrícula</label><input value="${r.re}" onchange="updateRowEdit('${r.id}','re',this.value)" /></div>
-        <div><label>Nome</label><input value="${r.nome}" onchange="updateRowEdit('${r.id}','nome',this.value)" /></div>
+        <div><label>Nome</label><input list="policiaisConhecidos" value="${r.nome}" onchange="onNomeChangeEdit('${r.id}',this.value)" /></div>
       </div>
       <label>Telefone</label>
       <input value="${r.tel}" onchange="updateRowEdit('${r.id}','tel',this.value)" style="margin-bottom:0;" />
@@ -1425,6 +1633,17 @@ function renderEfetivoRowsEdit(){
 function updateRowEdit(id, field, value){
   const r = efetivoRowsEdit.find(x => x.id === id);
   if(r) r[field] = value;
+}
+function onNomeChangeEdit(id, value){
+  const r = efetivoRowsEdit.find(x => x.id === id);
+  if(!r) return;
+  r.nome = value;
+  const match = findOfficerByName(value);
+  if(match){
+    if(!r.patente) r.patente = match.patente || '';
+    if(!r.re) r.re = match.re || '';
+  }
+  renderEfetivoRowsEdit();
 }
 function updateRowEditChecked(id, field, value){
   const r = efetivoRowsEdit.find(x => x.id === id);
@@ -1523,6 +1742,7 @@ async function saveEditLaunch(){
   if(wasEvento && l.evento !== oldEvento){
     await addEventToIndex(l.evento);
   }
+  await updateOfficerIndex(l.efetivo);
 
   closeEditModal();
   renderActiveListView();
