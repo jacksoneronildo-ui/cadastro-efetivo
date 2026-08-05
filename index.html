@@ -85,6 +85,7 @@
     <div class="tab" id="tabQuant" onclick="switchTab('quant')">Quantitativo de Lançamentos</div>
     <div class="tab" id="tabBusca" onclick="switchTab('busca')">Buscar Policial</div>
     <div class="tab" id="tabUsuarios" onclick="switchTab('usuarios')" style="display:none;">Usuários</div>
+    <div class="tab" id="tabAtivas" onclick="switchTab('ativas')" style="display:none;">Equipes Ativas</div>
   </div>
 
   <div id="viewNew"></div>
@@ -94,6 +95,7 @@
   <div id="viewQuant" class="hidden"></div>
   <div id="viewBusca" class="hidden"></div>
   <div id="viewUsuarios" class="hidden"></div>
+  <div id="viewAtivas" class="hidden"></div>
 </div>
 
 <div id="modalRoot"></div>
@@ -120,6 +122,7 @@ let eventIndex = []; // lista de nomes de eventos/operações já usados (sugest
 let officerIndex = []; // [{ nome, re, patente }] — diretório de policiais já cadastrados alguma vez
 let vehicleIndex = []; // [{ placa, modelo, pat }] — diretório de viaturas já cadastradas alguma vez
 let editLockHour = 8; // horário (0-23) do dia seguinte até quando um lançamento pode ser editado/removido
+let activeWindowHours = 6; // horas após o término previsto em que a equipe/posto ainda é considerada ativa por padrão
 let efetivoRowsEvento = [];
 let quantType = 'daily'; // 'daily' | 'evento'
 let quantDate = todayISO();
@@ -198,8 +201,11 @@ async function loadAll(){
   await loadVehicleIndex();
   await loadStaticCommand();
   await loadEditLockHour();
+  await loadActiveWindowHours();
   const tabUsuarios = document.getElementById('tabUsuarios');
   if(tabUsuarios) tabUsuarios.style.display = canManageUsers() ? 'block' : 'none';
+  const tabAtivas = document.getElementById('tabAtivas');
+  if(tabAtivas) tabAtivas.style.display = canToggleAtivo() ? 'block' : 'none';
   renderHeader();
   resetNewForm();
   renderDayView();
@@ -244,6 +250,16 @@ async function loadEditLockHour(){
   }catch(e){ editLockHour = 8; }
 }
 
+async function loadActiveWindowHours(){
+  try{
+    const r = await storageGet('active-window-hours');
+    activeWindowHours = (r && r.value !== undefined && r.value !== null) ? JSON.parse(r.value) : 6;
+  }catch(e){ activeWindowHours = 6; }
+}
+async function persistActiveWindowHours(){
+  await saveKey('active-window-hours', activeWindowHours);
+}
+
 async function persistEditLockHour(){
   await saveKey('edit-lock-hour', editLockHour);
 }
@@ -255,6 +271,139 @@ function isLaunchEditable(launch){
   limite.setDate(limite.getDate() + 1);
   limite.setHours(editLockHour, 0, 0, 0);
   return new Date() <= limite;
+}
+
+function computeServiceWindow(launch){
+  const [ih, im] = (launch.inicio || '00:00').split(':').map(Number);
+  const [fh, fm] = (launch.fim || '00:00').split(':').map(Number);
+  const start = new Date(launch.date + 'T00:00:00');
+  start.setHours(ih || 0, im || 0, 0, 0);
+  let end = new Date(launch.date + 'T00:00:00');
+  end.setHours(fh || 0, fm || 0, 0, 0);
+  if(end <= start) end.setDate(end.getDate() + 1); // atravessa a meia-noite
+  const activeUntil = new Date(end.getTime() + activeWindowHours * 60 * 60 * 1000);
+  return { start, end, activeUntil };
+}
+
+function isWithinActiveWindow(launch){
+  const w = computeServiceWindow(launch);
+  const now = new Date();
+  return now >= w.start && now <= w.activeUntil;
+}
+
+function windowsOverlap(a, b){
+  const wa = computeServiceWindow(a);
+  const wb = computeServiceWindow(b);
+  return wa.start < wb.end && wb.start < wa.end;
+}
+
+function detectScheduleConflicts(list){
+  // list: lançamentos não removidos e não desativados manualmente
+  const ativos = list.filter(l => l.ativo !== false);
+  const byOfficer = {};
+  ativos.forEach(l => {
+    (l.efetivo || []).forEach(p => {
+      const key = ((p.re || '').trim() || (p.nome || '').trim().toLowerCase());
+      if(!key) return;
+      if(!byOfficer[key]) byOfficer[key] = [];
+      byOfficer[key].push({ l, p });
+    });
+  });
+  const conflicts = {}; // key -> nome do policial em conflito
+  Object.entries(byOfficer).forEach(([key, entries]) => {
+    if(entries.length < 2) return;
+    for(let i = 0; i < entries.length; i++){
+      for(let j = i + 1; j < entries.length; j++){
+        if(windowsOverlap(entries[i].l, entries[j].l)){
+          conflicts[key] = entries[i].p.nome;
+        }
+      }
+    }
+  });
+  return conflicts;
+}
+
+let currentConflictKeys = {};
+
+async function toggleAtivo(id){
+  if(!canToggleAtivo()){
+    alert('Seu nível de acesso não permite alterar esse status.');
+    return;
+  }
+  const l = launches.find(x => x.id === id);
+  if(!l) return;
+  l.ativo = l.ativo === false ? true : false;
+  await persistLaunches();
+  renderActiveListView();
+}
+
+// ---------- EQUIPES ATIVAS ----------
+let equipesAtivasCache = [];
+
+async function renderEquipesAtivasView(){
+  if(!canToggleAtivo()){
+    document.getElementById('viewAtivas').innerHTML = `<div class="empty">Você não tem permissão para ver esta aba.</div>`;
+    return;
+  }
+  document.getElementById('viewAtivas').innerHTML = '<div class="empty">Carregando...</div>';
+  const hoje = todayISO();
+  const ontem = dateStrOffset(1);
+  let itens = [];
+  for(const d of [ontem, hoje]){
+    try{
+      const r = await storageGet(launchesKey(d));
+      const arr = (r && r.value) ? JSON.parse(r.value) : [];
+      arr.forEach(l => { if(!l.removed && l.ativo !== false) itens.push({ date: d, launch: l }); });
+    }catch(e){}
+  }
+  equipesAtivasCache = itens;
+  renderEquipesAtivasBody();
+}
+
+function renderEquipesAtivasBody(){
+  const itens = [...equipesAtivasCache].sort((a, b) => a.launch.createdAt - b.launch.createdAt);
+
+  const html = itens.length === 0
+    ? `<div class="empty">Nenhuma equipe/posto ativo no momento.</div>`
+    : itens.map(({ date, launch: l }) => {
+        const w = computeServiceWindow(l);
+        const atrasada = new Date() > w.activeUntil;
+        const headerLine = [l.evento, l.gt, l.cidade, l.codigo].filter(Boolean).join(' - ');
+        return `
+          <div class="card">
+            <div class="muted">${fmtDateBR(date)} · ${l.inicio}–${l.fim}${atrasada ? ' · <span style="color:var(--danger);">⏰ passou da janela prevista</span>' : ''}</div>
+            <div style="color:var(--text); font-family:'Inter',sans-serif; font-size:14px; font-weight:500; margin-top:4px;">${headerLine || '(sem cabeçalho)'}</div>
+            <div class="muted" style="margin-top:4px;">${l.efetivo.length} policial(is)${l.viatura && l.viatura.placa ? ' · Viatura: ' + l.viatura.placa : ''}</div>
+            <button class="btn btn-block" style="margin-top:10px; background:#1f3d2e; border:1px solid #2f5c44; color:#7fd99a;" onclick="toggleAtivoEquipes('${date}','${l.id}')">
+              🟢 Ativa — toque para encerrar
+            </button>
+          </div>
+        `;
+      }).join('');
+
+  document.getElementById('viewAtivas').innerHTML = `
+    <div class="section-title">Equipes/ Postos possivelmente ativos (hoje e ontem)</div>
+    ${html}
+  `;
+}
+
+async function toggleAtivoEquipes(date, id){
+  if(!canToggleAtivo()) return;
+  try{
+    const r = await storageGet(launchesKey(date));
+    const arr = (r && r.value) ? JSON.parse(r.value) : [];
+    const l = arr.find(x => x.id === id);
+    if(!l) return;
+    l.ativo = false;
+    await saveKey(launchesKey(date), arr);
+    if(activeBucketType === 'daily' && selectedDate === date){
+      launches = arr;
+    }
+    equipesAtivasCache = equipesAtivasCache.filter(it => !(it.date === date && it.launch.id === id));
+    renderEquipesAtivasBody();
+  }catch(e){
+    alert('Erro ao atualizar status: ' + e.message);
+  }
 }
 
 function openConfigModal(){
@@ -276,6 +425,13 @@ function openConfigModal(){
         <div class="muted" style="margin-top:8px; margin-bottom:16px;">
           Lançamentos de um dia só podem ser editados ou removidos até esse horário do dia seguinte. Depois disso, ficam travados.
         </div>
+        <label>Janela de atividade após o término previsto (horas)</label>
+        <select id="cfgActiveWindowHours" style="margin-bottom:0;">
+          ${Array.from({length: 25}, (_, h) => `<option value="${h}" ${h === activeWindowHours ? 'selected' : ''}>${h}h</option>`).join('')}
+        </select>
+        <div class="muted" style="margin-top:8px; margin-bottom:16px;">
+          Uma equipe/posto de serviço continua aparecendo como "possivelmente ativa" até esse número de horas depois do horário de término previsto, a menos que seja encerrada manualmente antes.
+        </div>
         <button class="btn btn-accent btn-block" onclick="saveConfigModal()">Salvar</button>
       </div>
     </div>
@@ -284,7 +440,9 @@ function openConfigModal(){
 function closeConfigModal(){ document.getElementById('modalRoot').innerHTML = ''; }
 async function saveConfigModal(){
   editLockHour = parseInt(document.getElementById('cfgEditLockHour').value, 10);
+  activeWindowHours = parseInt(document.getElementById('cfgActiveWindowHours').value, 10);
   await persistEditLockHour();
+  await persistActiveWindowHours();
   closeConfigModal();
   renderActiveListView();
 }
@@ -453,6 +611,7 @@ function switchTab(t){
   document.getElementById('tabQuant').classList.toggle('active', t==='quant');
   document.getElementById('tabBusca').classList.toggle('active', t==='busca');
   document.getElementById('tabUsuarios').classList.toggle('active', t==='usuarios');
+  document.getElementById('tabAtivas').classList.toggle('active', t==='ativas');
   document.getElementById('viewNew').classList.toggle('hidden', t!=='new');
   document.getElementById('viewNewEvento').classList.toggle('hidden', t!=='newEvento');
   document.getElementById('viewDay').classList.toggle('hidden', t!=='day');
@@ -460,12 +619,14 @@ function switchTab(t){
   document.getElementById('viewQuant').classList.toggle('hidden', t!=='quant');
   document.getElementById('viewBusca').classList.toggle('hidden', t!=='busca');
   document.getElementById('viewUsuarios').classList.toggle('hidden', t!=='usuarios');
+  document.getElementById('viewAtivas').classList.toggle('hidden', t!=='ativas');
   if(t==='day'){ activeBucketType='daily'; loadDateData(selectedDate).then(renderDayView); }
   if(t==='dayEvento'){ activeBucketType='evento'; renderEventoListView(); }
   if(t==='newEvento' && !document.getElementById('opGt')) resetEventoForm();
   if(t==='quant') renderQuantView();
   if(t==='busca' && !document.getElementById('buscaInput')) renderBuscaView();
   if(t==='usuarios') renderUsuariosView();
+  if(t==='ativas') renderEquipesAtivasView();
 }
 
 // ---------- NOVO LANÇAMENTO ----------
@@ -696,6 +857,7 @@ async function saveLaunch(){
     gt, cidade, codigo,
     efetivo, viatura,
     gcoi: false, gcoiAt: null,
+    ativo: true,
     createdAt: Date.now()
   };
 
@@ -916,6 +1078,7 @@ async function saveLaunchEvento(){
     gt, cidade, codigo,
     efetivo, viatura,
     gcoi: false, gcoiAt: null,
+    ativo: true,
     createdAt: Date.now()
   };
 
@@ -938,6 +1101,8 @@ function renderDayView(){
   const allDayLaunches = [...launches].sort((a,b) => a.createdAt - b.createdAt);
   const dayLaunches = allDayLaunches.filter(l => !l.removed);
   const dc = dailyCommandCurrent || {};
+  currentConflictKeys = detectScheduleConflicts(dayLaunches);
+  const nomesConflito = [...new Set(Object.values(currentConflictKeys))];
   const html = `
     <div class="card">
       <label>Data para consulta / relatório</label>
@@ -949,6 +1114,12 @@ function renderDayView(){
         📊 Exportar planilha (Excel)
       </button>
     </div>
+
+    ${nomesConflito.length > 0 ? `
+      <div style="background:#3A2418; border:1px solid var(--danger); color:#F2B8A9; font-size:13px; border-radius:8px; padding:10px 12px; margin-bottom:14px;">
+        ⚠️ <b>Conflito de horário detectado:</b> ${nomesConflito.join(', ')} — ${nomesConflito.length === 1 ? 'está' : 'estão'} lançado(a/os) em mais de um serviço com horários que se cruzam. Verifique os cadastros destacados abaixo.
+      </div>
+    ` : ''}
 
     <div class="card">
       <div class="section-title">Serviço diário</div>
@@ -982,6 +1153,7 @@ function sortGroupedByEvento(list){
 }
 
 function renderEventoListBody(){
+  currentConflictKeys = {};
   const allLaunches = sortGroupedByEvento(launches);
   const visibleLaunches = allLaunches.filter(l => !l.removed);
 
@@ -1287,7 +1459,7 @@ function renderUsuariosBody(filtro){
     <div class="card">
       <div class="section-title">Adicionar usuário</div>
       <label>Nome</label>
-      <input type="text" id="novoUserNome" placeholder="Ex: Eronildo Silva" />
+      <input type="text" id="novoUserNome" placeholder="Ex: Eronildo Nunes" />
       <label>E-mail</label>
       <input type="email" id="novoUserEmail" placeholder="pessoa@email.com" />
       <label>Senha inicial (mín. 6 caracteres)</label>
@@ -1442,6 +1614,7 @@ async function runBusca(){
     return;
   }
 
+  currentConflictKeys = {};
   found.sort((a, b) => b.launch.createdAt - a.launch.createdAt);
 
   resEl.innerHTML = `
@@ -1498,7 +1671,14 @@ async function changeDate(v){
 
 function launchCard(l){
   const armadoTxt = (v) => v.armadoCartao ? ` · Armado c/ cartão: ${v.armadoCartao === 'sim' ? 'Sim' : 'Não'}` : '';
-  const efetivoTxt = l.efetivo.map(p => `${p.sexo==='F'?'👮🏻‍♀️':'👮🏻‍♂️'} ${p.patente} ${p.re} ${p.nome}${p.motorista ? ' 🚗 (motorista)' : ''}${p.tel ? '\nTel. ' + p.tel : ''}${p.viatura ? `\n🏍️ Viatura: ${p.viatura.modelo || '-'} · KM ${p.viatura.km || '-'} · PAT ${p.viatura.pat || '-'} · Placa ${p.viatura.placa || '-'}${armadoTxt(p.viatura)}` : ''}${p.observacao ? `\n📝 ${p.observacao}` : ''}`).join('\n\n');
+  const efetivoTxt = l.efetivo.map(p => {
+    const key = ((p.re || '').trim() || (p.nome || '').trim().toLowerCase());
+    const emConflito = !!currentConflictKeys[key];
+    const nomeHtml = emConflito
+      ? `<span style="background:var(--danger); color:#fff; padding:1px 6px; border-radius:4px;">⚠️ ${p.nome}</span>`
+      : p.nome;
+    return `${p.sexo==='F'?'👮🏻‍♀️':'👮🏻‍♂️'} ${p.patente} ${p.re} ${nomeHtml}${p.motorista ? ' 🚗 (motorista)' : ''}${p.tel ? '\n Tel. ' + p.tel : ''}${p.viatura ? `\n🏍️ Viatura: ${p.viatura.modelo || '-'} · KM ${p.viatura.km || '-'} · PAT ${p.viatura.pat || '-'} · Placa ${p.viatura.placa || '-'}${armadoTxt(p.viatura)}` : ''}${p.observacao ? `\n📝 ${p.observacao}` : ''}`;
+  }).join('\n\n');
   const headerLine = [l.evento, l.gt, l.cidade, l.codigo].filter(Boolean).join(' - ');
   const hasViaturaGeral = l.viatura.modelo || l.viatura.km || l.viatura.pat || l.viatura.placa;
   const viaturaTxt = hasViaturaGeral
@@ -1517,6 +1697,15 @@ function launchCard(l){
         </div>
       </div>
       <div class="launch-preview">${preview}</div>
+      ${canToggleAtivo() ? `
+        <button class="btn btn-block" style="margin-top:10px; background:${l.ativo === false ? '#3A2418' : '#1f3d2e'}; border:1px solid ${l.ativo === false ? 'var(--danger)' : '#2f5c44'}; color:${l.ativo === false ? '#F2B8A9' : '#7fd99a'};" onclick="toggleAtivo('${l.id}')">
+          ${l.ativo === false ? '⚫ Encerrada — toque para reabrir' : '🟢 Ativa — toque para encerrar'}
+        </button>
+      ` : `
+        <div class="muted" style="margin-top:10px; text-align:center; font-size:12px;">
+          ${l.ativo === false ? '⚫ Encerrada' : '🟢 Ativa'}
+        </div>
+      `}
       <button class="btn btn-accent btn-block" style="margin-top:10px;" onclick="openGcoi('${l.id}')">
         📋 CADASTRO GCOI ${l.gcoi ? '(reabrir)' : ''}
       </button>
@@ -2143,6 +2332,7 @@ function canRemoveLaunch(){ return isAdmin() || isReduzido(); }
 function canEditComando(){ return isAdmin() || isReduzido(); }
 function canChangeLockHour(){ return isAdmin(); }
 function canManageUsers(){ return isAdmin() || isReduzido(); }
+function canToggleAtivo(){ return isAdmin() || isReduzido(); }
 function creatableLevels(){
   if(isAdmin()) return ['admin', 'reduzido', 'geral'];
   if(isReduzido()) return ['geral'];
