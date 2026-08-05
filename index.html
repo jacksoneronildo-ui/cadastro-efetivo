@@ -427,7 +427,7 @@ function openConfigModal(){
         </div>
         <label>Janela de atividade após o término previsto (horas)</label>
         <select id="cfgActiveWindowHours" style="margin-bottom:0;">
-          ${Array.from({length: 25}, (_, h) => `<option value="${h}" ${h === activeWindowHours ? 'selected' : ''}>${h}h</option>`).join('')}
+          ${Array.from({length: 25}, (_, h) => `<option value="${h}" ${h === activeWindowHours ? 'selected' : ''}>+ ${h} ${h === 1 ? 'hora' : 'horas'} após o término</option>`).join('')}
         </select>
         <div class="muted" style="margin-top:8px; margin-bottom:16px;">
           Uma equipe/posto de serviço continua aparecendo como "possivelmente ativa" até esse número de horas depois do horário de término previsto, a menos que seja encerrada manualmente antes.
