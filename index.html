@@ -1257,6 +1257,8 @@ function dateStrOffset(days){
 // ---------- USUÁRIOS (PERMISSÕES) ----------
 const NIVEL_LABEL = { admin: 'Admin', reduzido: 'Reduzido', geral: 'Geral' };
 
+let usuariosListaCache = [];
+
 async function renderUsuariosView(){
   if(!canManageUsers()){
     document.getElementById('viewUsuarios').innerHTML = `<div class="empty">Você não tem permissão para gerenciar usuários.</div>`;
@@ -1268,13 +1270,24 @@ async function renderUsuariosView(){
     const snap = await db.collection(PERMISSIONS_COLLECTION).get();
     snap.forEach(doc => lista.push({ email: doc.id, ...doc.data() }));
   }catch(e){}
-  lista.sort((a, b) => a.email.localeCompare(b.email));
+  lista.sort((a, b) => (a.nome || a.email).localeCompare(b.nome || b.email));
+  usuariosListaCache = lista;
 
+  renderUsuariosBody('');
+}
+
+function renderUsuariosBody(filtro){
   const niveisPermitidos = creatableLevels();
+  filtro = (filtro || '').trim().toLowerCase();
+  const lista = filtro
+    ? usuariosListaCache.filter(u => (u.nome || '').toLowerCase().includes(filtro) || u.email.toLowerCase().includes(filtro))
+    : usuariosListaCache;
 
   document.getElementById('viewUsuarios').innerHTML = `
     <div class="card">
       <div class="section-title">Adicionar usuário</div>
+      <label>Nome</label>
+      <input type="text" id="novoUserNome" placeholder="Ex: Eronildo Silva" />
       <label>E-mail</label>
       <input type="email" id="novoUserEmail" placeholder="pessoa@email.com" />
       <label>Senha inicial (mín. 6 caracteres)</label>
@@ -1286,13 +1299,18 @@ async function renderUsuariosView(){
       </select>
       <button class="btn btn-accent btn-block" id="btnAddUsuario" style="margin-top:12px;" onclick="addUsuario()">Adicionar</button>
     </div>
-    <div class="section-title">Usuários cadastrados</div>
-    ${lista.length === 0 ? `<div class="empty">Nenhum usuário cadastrado ainda.</div>` :
+    <div class="card">
+      <label>Buscar usuário cadastrado (nome ou e-mail)</label>
+      <input type="text" id="filtroUsuarios" placeholder="Digite para buscar..." value="${filtro}" oninput="renderUsuariosBody(this.value)" style="margin-bottom:0;" />
+    </div>
+    <div class="section-title">Usuários cadastrados (${lista.length}${filtro ? ` de ${usuariosListaCache.length}` : ''})</div>
+    ${lista.length === 0 ? `<div class="empty">${usuariosListaCache.length === 0 ? 'Nenhum usuário cadastrado ainda.' : 'Nenhum usuário encontrado para essa busca.'}</div>` :
       lista.map(u => `
         <div class="card">
           <div class="flex-between">
             <div>
-              <div style="color:var(--text); font-family:'Inter',sans-serif; font-size:14px;">${u.email}</div>
+              <div style="color:var(--text); font-family:'Inter',sans-serif; font-size:14px; font-weight:500;">${u.nome || '(sem nome)'}</div>
+              <div class="muted" style="margin-top:2px;">${u.email}</div>
               <div class="muted" style="margin-top:2px;">${NIVEL_LABEL[u.nivel] || u.nivel}</div>
             </div>
             ${isAdmin() && u.email !== currentUserEmail ? `<button class="btn btn-danger" onclick="removeUsuario('${u.email}')">Remover</button>` : ''}
@@ -1300,12 +1318,23 @@ async function renderUsuariosView(){
         </div>
       `).join('')}
   `;
+  // preserva o foco no campo de busca após re-renderizar
+  const filtroInput = document.getElementById('filtroUsuarios');
+  if(filtroInput && filtro){
+    filtroInput.focus();
+    filtroInput.setSelectionRange(filtro.length, filtro.length);
+  }
 }
 
 async function addUsuario(){
+  const nome = document.getElementById('novoUserNome').value.trim();
   const email = document.getElementById('novoUserEmail').value.trim().toLowerCase();
   const senha = document.getElementById('novoUserSenha').value;
   const nivel = document.getElementById('novoUserNivel').value;
+  if(!nome){
+    alert('Informe o nome do usuário.');
+    return;
+  }
   if(!email || !email.includes('@')){
     alert('Informe um e-mail válido.');
     return;
@@ -1333,6 +1362,7 @@ async function addUsuario(){
     await secAuth.signOut();
 
     await db.collection(PERMISSIONS_COLLECTION).doc(email).set({
+      nome,
       nivel,
       criadoPor: currentUserEmail,
       criadoEm: firebase.firestore.FieldValue.serverTimestamp()
