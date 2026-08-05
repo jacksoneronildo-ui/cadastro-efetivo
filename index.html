@@ -71,6 +71,7 @@
       <div class="sub" id="unitSub">9ª CIPM</div>
     </div>
     <button class="gear" onclick="openConfigModal()" aria-label="Configurações">⚙️</button>
+    <button class="gear" onclick="openChangePasswordModal()" aria-label="Trocar senha" style="margin-left:6px;">🔑</button>
     <button class="gear" onclick="logout()" aria-label="Sair" style="margin-left:6px;">🚪</button>
   </div>
 
@@ -144,6 +145,15 @@ db.enablePersistence({ synchronizeTabs: true }).catch((err) => {
   console.warn('Persistência offline não ativada:', err.code);
 });
 const auth = firebase.auth();
+
+// App secundário: permite criar contas de outros usuários sem deslogar quem está criando
+let secondaryFirebaseApp = null;
+function getSecondaryAuth(){
+  if(!secondaryFirebaseApp){
+    secondaryFirebaseApp = firebase.initializeApp(firebaseConfig, 'Secondary');
+  }
+  return secondaryFirebaseApp.auth();
+}
 const PERMISSIONS_COLLECTION = 'permissions';
 let currentUserEmail = null;
 let currentUserLevel = null; // 'admin' | 'reduzido' | 'geral'
@@ -1267,11 +1277,14 @@ async function renderUsuariosView(){
       <div class="section-title">Adicionar usuário</div>
       <label>E-mail</label>
       <input type="email" id="novoUserEmail" placeholder="pessoa@email.com" />
+      <label>Senha inicial (mín. 6 caracteres)</label>
+      <input type="text" id="novoUserSenha" placeholder="Ex: cipm2026" />
+      <div class="muted" style="margin-top:-6px; margin-bottom:12px;">A pessoa poderá trocar essa senha depois de entrar.</div>
       <label>Nível de acesso</label>
       <select id="novoUserNivel" style="margin-bottom:0;">
         ${niveisPermitidos.map(n => `<option value="${n}">${NIVEL_LABEL[n]}</option>`).join('')}
       </select>
-      <button class="btn btn-accent btn-block" style="margin-top:12px;" onclick="addUsuario()">Adicionar</button>
+      <button class="btn btn-accent btn-block" id="btnAddUsuario" style="margin-top:12px;" onclick="addUsuario()">Adicionar</button>
     </div>
     <div class="section-title">Usuários cadastrados</div>
     ${lista.length === 0 ? `<div class="empty">Nenhum usuário cadastrado ainda.</div>` :
@@ -1291,16 +1304,34 @@ async function renderUsuariosView(){
 
 async function addUsuario(){
   const email = document.getElementById('novoUserEmail').value.trim().toLowerCase();
+  const senha = document.getElementById('novoUserSenha').value;
   const nivel = document.getElementById('novoUserNivel').value;
   if(!email || !email.includes('@')){
     alert('Informe um e-mail válido.');
+    return;
+  }
+  if(!senha || senha.length < 6){
+    alert('A senha precisa ter pelo menos 6 caracteres.');
     return;
   }
   if(!creatableLevels().includes(nivel)){
     alert('Você não tem permissão para cadastrar esse nível.');
     return;
   }
+
+  const btn = document.getElementById('btnAddUsuario');
+  if(btn){ btn.disabled = true; btn.textContent = 'Adicionando...'; }
+
   try{
+    const secAuth = getSecondaryAuth();
+    try{
+      await secAuth.createUserWithEmailAndPassword(email, senha);
+    }catch(e){
+      if(e.code !== 'auth/email-already-in-use') throw e;
+      // já existe conta de login pra esse e-mail: só ajustamos a permissão abaixo
+    }
+    await secAuth.signOut();
+
     await db.collection(PERMISSIONS_COLLECTION).doc(email).set({
       nivel,
       criadoPor: currentUserEmail,
@@ -1309,6 +1340,7 @@ async function addUsuario(){
     renderUsuariosView();
   }catch(e){
     alert('Erro ao adicionar usuário: ' + e.message);
+    if(btn){ btn.disabled = false; btn.textContent = 'Adicionar'; }
   }
 }
 
@@ -2121,6 +2153,68 @@ async function attemptLogin(){
 
 function logout(){
   auth.signOut();
+}
+
+function openChangePasswordModal(){
+  document.getElementById('modalRoot').innerHTML = `
+    <div class="modal-bg" onclick="if(event.target===this) closeChangePasswordModal()">
+      <div class="modal">
+        <div class="modal-head">
+          <span class="section-title" style="margin-bottom:0;">Trocar minha senha</span>
+          <button class="close" onclick="closeChangePasswordModal()">✕</button>
+        </div>
+        <label>Senha atual</label>
+        <input type="password" id="senhaAtual" />
+        <label>Nova senha (mín. 6 caracteres)</label>
+        <input type="password" id="senhaNova" />
+        <label>Confirmar nova senha</label>
+        <input type="password" id="senhaNovaConfirma" style="margin-bottom:0;" />
+        <div id="senhaMsg" class="muted" style="margin-top:8px;"></div>
+        <button class="btn btn-accent btn-block" id="btnTrocarSenha" style="margin-top:14px;" onclick="submitChangePassword()">Salvar nova senha</button>
+      </div>
+    </div>
+  `;
+}
+function closeChangePasswordModal(){ document.getElementById('modalRoot').innerHTML = ''; }
+
+async function submitChangePassword(){
+  const atual = document.getElementById('senhaAtual').value;
+  const nova = document.getElementById('senhaNova').value;
+  const confirma = document.getElementById('senhaNovaConfirma').value;
+  const msgEl = document.getElementById('senhaMsg');
+
+  if(!atual || !nova || !confirma){
+    msgEl.textContent = 'Preencha todos os campos.';
+    return;
+  }
+  if(nova.length < 6){
+    msgEl.textContent = 'A nova senha precisa ter pelo menos 6 caracteres.';
+    return;
+  }
+  if(nova !== confirma){
+    msgEl.textContent = 'As duas senhas novas não são iguais.';
+    return;
+  }
+
+  const btn = document.getElementById('btnTrocarSenha');
+  btn.disabled = true; btn.textContent = 'Salvando...';
+  msgEl.textContent = '';
+
+  try{
+    const user = auth.currentUser;
+    const cred = firebase.auth.EmailAuthProvider.credential(user.email, atual);
+    await user.reauthenticateWithCredential(cred);
+    await user.updatePassword(nova);
+    closeChangePasswordModal();
+    alert('Senha alterada com sucesso.');
+  }catch(e){
+    btn.disabled = false; btn.textContent = 'Salvar nova senha';
+    if(e.code === 'auth/wrong-password' || e.code === 'auth/invalid-credential'){
+      msgEl.textContent = 'Senha atual incorreta.';
+    } else {
+      msgEl.textContent = 'Erro: ' + e.message;
+    }
+  }
 }
 
 async function checkPermissionAndStart(user){
