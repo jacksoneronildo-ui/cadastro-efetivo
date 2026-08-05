@@ -86,6 +86,7 @@
     <div class="tab" id="tabBusca" onclick="switchTab('busca')">Buscar Policial</div>
     <div class="tab" id="tabUsuarios" onclick="switchTab('usuarios')" style="display:none;">Usuários</div>
     <div class="tab" id="tabAtivas" onclick="switchTab('ativas')" style="display:none;">Equipes Ativas</div>
+    <div class="tab" id="tabAuditoria" onclick="switchTab('auditoria')" style="display:none;">Auditoria</div>
   </div>
 
   <div id="viewNew"></div>
@@ -96,6 +97,7 @@
   <div id="viewBusca" class="hidden"></div>
   <div id="viewUsuarios" class="hidden"></div>
   <div id="viewAtivas" class="hidden"></div>
+  <div id="viewAuditoria" class="hidden"></div>
 </div>
 
 <div id="modalRoot"></div>
@@ -108,6 +110,11 @@ const LOGO_B64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQQAAAF1CAYAAAAO
 function todayISO(){ const d=new Date(); return d.toISOString().slice(0,10); }
 function fmtDatePT(iso){ const [y,m,d]=iso.split("-"); return `${d}${MESES[parseInt(m,10)-1]}${y}`; }
 function fmtDateBR(iso){ const [y,m,d]=iso.split("-"); return `${d}/${m}/${y}`; }
+function fmtWhen(ts){
+  if(!ts) return '-';
+  const d = new Date(ts);
+  return `${fmtDateBR(d.toISOString().slice(0,10))} às ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 
 const MOTTO = "9ª CIPM: TRABALHO, FORÇA E DEDICAÇÃO";
@@ -206,6 +213,8 @@ async function loadAll(){
   if(tabUsuarios) tabUsuarios.style.display = canManageUsers() ? 'block' : 'none';
   const tabAtivas = document.getElementById('tabAtivas');
   if(tabAtivas) tabAtivas.style.display = canToggleAtivo() ? 'block' : 'none';
+  const tabAuditoria = document.getElementById('tabAuditoria');
+  if(tabAuditoria) tabAuditoria.style.display = isAdmin() ? 'block' : 'none';
   renderHeader();
   resetNewForm();
   renderDayView();
@@ -333,6 +342,8 @@ async function toggleAtivo(id){
   const l = launches.find(x => x.id === id);
   if(!l) return;
   l.ativo = l.ativo === false ? true : false;
+  l.ativoAlteradoPor = currentUserEmail;
+  l.ativoAlteradoEm = Date.now();
   await persistLaunches();
   renderActiveListView();
 }
@@ -395,6 +406,8 @@ async function toggleAtivoEquipes(date, id){
     const l = arr.find(x => x.id === id);
     if(!l) return;
     l.ativo = false;
+    l.ativoAlteradoPor = currentUserEmail;
+  l.ativoAlteradoEm = Date.now();
     await saveKey(launchesKey(date), arr);
     if(activeBucketType === 'daily' && selectedDate === date){
       launches = arr;
@@ -405,6 +418,184 @@ async function toggleAtivoEquipes(date, id){
     alert('Erro ao atualizar status: ' + e.message);
   }
 }
+
+// ---------- AUDITORIA (ADMIN) ----------
+let auditoriaCache = [];
+
+function renderAuditoriaView(){
+  if(!isAdmin()){
+    document.getElementById('viewAuditoria').innerHTML = `<div class="empty">Apenas administradores podem acessar a auditoria.</div>`;
+    return;
+  }
+  document.getElementById('viewAuditoria').innerHTML = `
+    <div class="card">
+      <label>Nome ou e-mail do usuário (opcional)</label>
+      <input type="text" id="auditUsuario" placeholder="Deixe em branco para ver todos" />
+      <div class="row">
+        <div>
+          <label>De</label>
+          <input type="date" id="auditDe" value="${dateStrOffset(30)}" />
+        </div>
+        <div>
+          <label>Até</label>
+          <input type="date" id="auditAte" value="${todayISO()}" style="margin-bottom:0;" />
+        </div>
+      </div>
+      <button class="btn btn-accent btn-block" style="margin-top:12px;" onclick="runAuditoria()">🔎 Gerar auditoria</button>
+    </div>
+    <div id="auditResultado"></div>
+  `;
+}
+
+async function runAuditoria(){
+  const filtroUsuario = document.getElementById('auditUsuario').value.trim().toLowerCase();
+  const de = document.getElementById('auditDe').value;
+  const ate = document.getElementById('auditAte').value;
+  const resEl = document.getElementById('auditResultado');
+  if(!de || !ate || de > ate){
+    resEl.innerHTML = `<div class="empty">Verifique as datas — "De" precisa ser antes ou igual a "Até".</div>`;
+    return;
+  }
+
+  const dateList = [];
+  let cursor = new Date(de + 'T00:00:00');
+  const fim = new Date(ate + 'T00:00:00');
+  while(cursor <= fim && dateList.length < 400){
+    dateList.push(cursor.toISOString().slice(0, 10));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  resEl.innerHTML = `<div class="empty">Gerando auditoria entre ${fmtDateBR(de)} e ${fmtDateBR(ate)}...</div>`;
+
+  const jobs = [];
+  dateList.forEach(d => {
+    jobs.push(storageGet(launchesKey(d)).then(r => ({ tipo: 'daily', arr: JSON.parse(r.value) })).catch(() => null));
+    jobs.push(storageGet(eventLaunchesKey(d)).then(r => ({ tipo: 'evento', arr: JSON.parse(r.value) })).catch(() => null));
+  });
+  const results = await Promise.all(jobs);
+
+  const registros = [];
+  results.forEach(item => {
+    if(!item) return;
+    item.arr.forEach(l => {
+      const headerLine = [l.evento, l.gt, l.cidade, l.codigo].filter(Boolean).join(' - ') || '(sem cabeçalho)';
+      const base = { data: l.date, tipoLancamento: item.tipo === 'evento' ? 'Evento/ Operação' : 'Serviço diário', headerLine };
+      if(l.criadoPor){
+        registros.push({ ...base, acao: 'Cadastro', usuario: l.criadoPor, quando: l.createdAt, detalhe: '' });
+      }
+      if(l.edited && l.editadoPor){
+        registros.push({ ...base, acao: 'Edição', usuario: l.editadoPor, quando: l.editedAt, detalhe: '' });
+      }
+      if(l.removed && l.removidoPor){
+        registros.push({ ...base, acao: 'Remoção', usuario: l.removidoPor, quando: l.removedAt, detalhe: l.removedReason || '' });
+      }
+      if(l.ativoAlteradoPor && l.ativoAlteradoEm){
+        registros.push({ ...base, acao: l.ativo === false ? 'Encerrou equipe/posto' : 'Reabriu equipe/posto', usuario: l.ativoAlteradoPor, quando: l.ativoAlteradoEm, detalhe: '' });
+      }
+    });
+  });
+
+  const filtrados = filtroUsuario
+    ? registros.filter(r => (r.usuario || '').toLowerCase().includes(filtroUsuario))
+    : registros;
+
+  filtrados.sort((a, b) => b.quando - a.quando);
+  auditoriaCache = filtrados;
+
+  if(filtrados.length === 0){
+    resEl.innerHTML = `<div class="empty">Nenhuma ação encontrada nesse período/filtro.</div>`;
+    return;
+  }
+
+  resEl.innerHTML = `
+    <div class="card">
+      <button class="btn btn-accent btn-block" onclick="generateAuditoriaPDF()">📄 Gerar PDF da auditoria</button>
+      <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="generateAuditoriaXLSX()">📊 Exportar planilha (Excel)</button>
+    </div>
+    <div class="section-title">${filtrados.length} ação(ões) encontrada(s)</div>
+    ${filtrados.map(r => `
+      <div class="card">
+        <div class="flex-between">
+          <span style="color:var(--accent); font-family:'Oswald',sans-serif; font-size:13.5px;">${r.acao}</span>
+          <span class="muted" style="font-family:'JetBrains Mono', monospace; font-size:11px;">${fmtWhen(r.quando)}</span>
+        </div>
+        <div style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px; margin-top:4px;">${r.usuario}</div>
+        <div class="muted" style="margin-top:4px;">${fmtDateBR(r.data)} · ${r.tipoLancamento} · ${r.headerLine}</div>
+        ${r.detalhe ? `<div class="muted" style="margin-top:4px;">Motivo: ${r.detalhe}</div>` : ''}
+      </div>
+    `).join('')}
+  `;
+}
+
+function generateAuditoriaXLSX(){
+  if(auditoriaCache.length === 0) return;
+  const rows = auditoriaCache.map(r => ({
+    'Ação': r.acao,
+    'Usuário': r.usuario,
+    'Quando': fmtWhen(r.quando),
+    'Data do serviço': fmtDateBR(r.data),
+    'Tipo': r.tipoLancamento,
+    'Serviço': r.headerLine,
+    'Detalhe/ Motivo': r.detalhe
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Auditoria');
+  XLSX.writeFile(wb, `auditoria_${todayISO()}.xlsx`);
+}
+
+function generateAuditoriaPDF(){
+  if(auditoriaCache.length === 0) return;
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const marginL = 48, marginR = 48;
+  const contentW = pageW - marginL - marginR;
+  let y = 56;
+
+  function checkPage(need){
+    if(y + need > 780){ doc.addPage(); y = 56; }
+  }
+  function line(text, opts = {}){
+    const size = opts.size || 10.5;
+    const bold = opts.bold || false;
+    const gap = opts.gap !== undefined ? opts.gap : size + 6;
+    doc.setFont('helvetica', bold ? 'bold' : 'normal');
+    doc.setFontSize(size);
+    const wrapped = doc.splitTextToSize(text, contentW);
+    checkPage(wrapped.length * gap + 4);
+    doc.text(wrapped, marginL, y);
+    y += wrapped.length * gap;
+  }
+
+  doc.setFillColor(11, 31, 110);
+  doc.rect(0, 0, pageW, 60, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(16);
+  doc.text('RELATÓRIO DE AUDITORIA', marginL, 32);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  doc.text('9ª Companhia Independente de Polícia Militar', marginL, 48);
+  doc.setTextColor(0, 0, 0);
+  y = 88;
+
+  auditoriaCache.forEach(r => {
+    checkPage(70);
+    line(`${r.acao} — ${r.usuario}`, {bold:true, size:11.5, gap:15});
+    line(`Quando: ${fmtWhen(r.quando)}`, {size:9.5, gap:12});
+    line(`Serviço: ${r.headerLine} (${r.tipoLancamento}, data ${fmtDateBR(r.data)})`, {size:9.5, gap:12});
+    if(r.detalhe){
+      line(`Motivo: ${r.detalhe}`, {size:9.5, gap:12});
+    }
+    y += 6;
+    doc.setDrawColor(230); doc.line(marginL, y, pageW - marginR, y);
+    y += 14;
+  });
+
+  doc.save(`auditoria_${todayISO()}.pdf`);
+}
+
 
 function openConfigModal(){
   if(!canChangeLockHour()){
@@ -612,6 +803,7 @@ function switchTab(t){
   document.getElementById('tabBusca').classList.toggle('active', t==='busca');
   document.getElementById('tabUsuarios').classList.toggle('active', t==='usuarios');
   document.getElementById('tabAtivas').classList.toggle('active', t==='ativas');
+  document.getElementById('tabAuditoria').classList.toggle('active', t==='auditoria');
   document.getElementById('viewNew').classList.toggle('hidden', t!=='new');
   document.getElementById('viewNewEvento').classList.toggle('hidden', t!=='newEvento');
   document.getElementById('viewDay').classList.toggle('hidden', t!=='day');
@@ -620,6 +812,7 @@ function switchTab(t){
   document.getElementById('viewBusca').classList.toggle('hidden', t!=='busca');
   document.getElementById('viewUsuarios').classList.toggle('hidden', t!=='usuarios');
   document.getElementById('viewAtivas').classList.toggle('hidden', t!=='ativas');
+  document.getElementById('viewAuditoria').classList.toggle('hidden', t!=='auditoria');
   if(t==='day'){ activeBucketType='daily'; loadDateData(selectedDate).then(renderDayView); }
   if(t==='dayEvento'){ activeBucketType='evento'; renderEventoListView(); }
   if(t==='newEvento' && !document.getElementById('opGt')) resetEventoForm();
@@ -627,6 +820,7 @@ function switchTab(t){
   if(t==='busca' && !document.getElementById('buscaInput')) renderBuscaView();
   if(t==='usuarios') renderUsuariosView();
   if(t==='ativas') renderEquipesAtivasView();
+  if(t==='auditoria') renderAuditoriaView();
 }
 
 // ---------- NOVO LANÇAMENTO ----------
@@ -858,6 +1052,7 @@ async function saveLaunch(){
     efetivo, viatura,
     gcoi: false, gcoiAt: null,
     ativo: true,
+    criadoPor: currentUserEmail,
     createdAt: Date.now()
   };
 
@@ -1079,6 +1274,7 @@ async function saveLaunchEvento(){
     efetivo, viatura,
     gcoi: false, gcoiAt: null,
     ativo: true,
+    criadoPor: currentUserEmail,
     createdAt: Date.now()
   };
 
@@ -1193,58 +1389,71 @@ async function changeEventoDate(v){
 // ---------- QUANTITATIVO DE LANÇAMENTOS ----------
 function computeQuantitativo(list){
   const counts = {};
+  const countsAtivos = {};
   list.forEach(l => {
+    const ativo = l.ativo !== false;
     (l.efetivo || []).forEach(p => {
       const pat = (p.patente || '').trim() || '(não informado)';
       counts[pat] = (counts[pat] || 0) + 1;
+      if(ativo) countsAtivos[pat] = (countsAtivos[pat] || 0) + 1;
     });
   });
-  const entries = Object.entries(counts).sort((a, b) => a[0].localeCompare(b[0]));
-  let oficiais = 0, pracas = 0, outros = 0;
-  entries.forEach(([pat, n]) => {
-    if(OFICIAIS_PATENTES.includes(pat)) oficiais += n;
-    else if(PRACAS_PATENTES.includes(pat)) pracas += n;
-    else outros += n;
+  const entries = Object.entries(counts).sort((a, b) => a[0].localeCompare(b[0])).map(([pat, n]) => [pat, n, countsAtivos[pat] || 0]);
+  let oficiais = 0, pracas = 0, outros = 0, oficiaisAtivos = 0, pracasAtivos = 0, outrosAtivos = 0;
+  entries.forEach(([pat, n, nAtivo]) => {
+    if(OFICIAIS_PATENTES.includes(pat)){ oficiais += n; oficiaisAtivos += nAtivo; }
+    else if(PRACAS_PATENTES.includes(pat)){ pracas += n; pracasAtivos += nAtivo; }
+    else { outros += n; outrosAtivos += nAtivo; }
   });
-  return { entries, oficiais, pracas, outros, total: oficiais + pracas };
+  return {
+    entries, oficiais, pracas, outros, total: oficiais + pracas,
+    oficiaisAtivos, pracasAtivos, outrosAtivos, totalAtivos: oficiaisAtivos + pracasAtivos
+  };
 }
 
 function computeVeiculos(list){
   const carrosPlacas = new Set();
+  const carrosPlacasAtivas = new Set();
   const motosPlacas = new Set();
-  let carrosSemPlaca = 0;
-  let motosSemPlaca = 0;
+  const motosPlacasAtivas = new Set();
+  let carrosSemPlaca = 0, carrosSemPlacaAtivos = 0;
+  let motosSemPlaca = 0, motosSemPlacaAtivos = 0;
   list.forEach(l => {
+    const ativo = l.ativo !== false;
     const gv = l.viatura || {};
     const temDadoGeral = gv.modelo || gv.km || gv.pat || gv.placa;
     if(temDadoGeral){
       const placa = (gv.placa || '').trim().toUpperCase();
-      if(placa) carrosPlacas.add(placa);
-      else carrosSemPlaca++;
+      if(placa){ carrosPlacas.add(placa); if(ativo) carrosPlacasAtivas.add(placa); }
+      else { carrosSemPlaca++; if(ativo) carrosSemPlacaAtivos++; }
     }
     (l.efetivo || []).forEach(p => {
       if(p.viatura){
         const placa = (p.viatura.placa || '').trim().toUpperCase();
-        if(placa) motosPlacas.add(placa);
-        else motosSemPlaca++;
+        if(placa){ motosPlacas.add(placa); if(ativo) motosPlacasAtivas.add(placa); }
+        else { motosSemPlaca++; if(ativo) motosSemPlacaAtivos++; }
       }
     });
   });
   const carros = carrosPlacas.size + carrosSemPlaca;
+  const carrosAtivos = carrosPlacasAtivas.size + carrosSemPlacaAtivos;
   const motos = motosPlacas.size + motosSemPlaca;
-  return { carros, motos, total: carros + motos };
+  const motosAtivos = motosPlacasAtivas.size + motosSemPlacaAtivos;
+  return { carros, motos, total: carros + motos, carrosAtivos, motosAtivos, totalAtivos: carrosAtivos + motosAtivos };
 }
 
 function computeEquipesPostos(list){
-  let equipes = 0, postos = 0;
+  let equipes = 0, postos = 0, equipesAtivas = 0, postosAtivos = 0;
   list.forEach(l => {
     const gv = l.viatura || {};
     const temViaturaGeral = !!(gv.modelo || gv.km || gv.pat || gv.placa);
     const temMoto = (l.efetivo || []).some(p => !!p.viatura);
-    if(temViaturaGeral || temMoto) equipes++;
-    else postos++;
+    const isEquipe = temViaturaGeral || temMoto;
+    const ativo = l.ativo !== false;
+    if(isEquipe){ equipes++; if(ativo) equipesAtivas++; }
+    else { postos++; if(ativo) postosAtivos++; }
   });
-  return { equipes, postos, total: equipes + postos };
+  return { equipes, postos, total: equipes + postos, equipesAtivas, postosAtivos, totalAtivos: equipesAtivas + postosAtivos };
 }
 
 async function loadQuantData(){
@@ -1268,10 +1477,10 @@ async function changeQuantDate(v){
 function quantCardHtml(title, q){
   const rowsHtml = q.entries.length === 0
     ? `<div class="empty">Nenhum efetivo lançado.</div>`
-    : q.entries.map(([pat, n]) => `
+    : q.entries.map(([pat, n, nAtivo]) => `
         <div class="flex-between" style="padding:6px 0; border-bottom:1px solid var(--border);">
           <span style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px;">${pat}</span>
-          <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${n}</span>
+          <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${n} <span style="color:var(--ok); font-size:11.5px;">(${nAtivo} ativos)</span></span>
         </div>
       `).join('');
   return `
@@ -1280,20 +1489,20 @@ function quantCardHtml(title, q){
       ${rowsHtml}
       <div class="flex-between" style="padding:8px 0 0; margin-top:8px; border-top:1px solid var(--border);">
         <span style="color:var(--text); font-family:'Oswald',sans-serif; font-size:13px;">Oficiais</span>
-        <span style="color:var(--info); font-family:'JetBrains Mono', monospace; font-size:14px;">${q.oficiais}</span>
+        <span style="color:var(--info); font-family:'JetBrains Mono', monospace; font-size:14px;">${q.oficiais} <span style="color:var(--ok); font-size:11.5px;">(${q.oficiaisAtivos} ativos)</span></span>
       </div>
       <div class="flex-between" style="padding:2px 0;">
         <span style="color:var(--text); font-family:'Oswald',sans-serif; font-size:13px;">Praças</span>
-        <span style="color:var(--info); font-family:'JetBrains Mono', monospace; font-size:14px;">${q.pracas}</span>
+        <span style="color:var(--info); font-family:'JetBrains Mono', monospace; font-size:14px;">${q.pracas} <span style="color:var(--ok); font-size:11.5px;">(${q.pracasAtivos} ativos)</span></span>
       </div>
       ${q.outros > 0 ? `
       <div class="flex-between" style="padding:2px 0;">
         <span style="color:var(--muted); font-family:'Oswald',sans-serif; font-size:12.5px;">Outros (posto não padronizado)</span>
-        <span style="color:var(--muted); font-family:'JetBrains Mono', monospace; font-size:13.5px;">${q.outros}</span>
+        <span style="color:var(--muted); font-family:'JetBrains Mono', monospace; font-size:13.5px;">${q.outros} (${q.outrosAtivos} ativos)</span>
       </div>` : ''}
       <div class="flex-between" style="padding:8px 0 0; margin-top:6px; border-top:1px solid var(--border);">
         <span style="color:var(--accent); font-family:'Oswald',sans-serif; font-size:15px;">Total</span>
-        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:17px;">${q.total}</span>
+        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:17px;">${q.total} <span style="color:var(--ok); font-size:13px;">(${q.totalAtivos} ativos)</span></span>
       </div>
     </div>
   `;
@@ -1305,15 +1514,15 @@ function veiculosCardHtml(title, v){
       <div class="section-title">${title}</div>
       <div class="flex-between" style="padding:6px 0; border-bottom:1px solid var(--border);">
         <span style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px;">4 rodas (geral)</span>
-        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${v.carros}</span>
+        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${v.carros} <span style="color:var(--ok); font-size:11.5px;">(${v.carrosAtivos} ativos)</span></span>
       </div>
       <div class="flex-between" style="padding:6px 0;">
         <span style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px;">2 rodas (motos)</span>
-        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${v.motos}</span>
+        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${v.motos} <span style="color:var(--ok); font-size:11.5px;">(${v.motosAtivos} ativos)</span></span>
       </div>
       <div class="flex-between" style="padding:8px 0 0; margin-top:6px; border-top:1px solid var(--border);">
         <span style="color:var(--accent); font-family:'Oswald',sans-serif; font-size:15px;">Total</span>
-        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:17px;">${v.total}</span>
+        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:17px;">${v.total} <span style="color:var(--ok); font-size:13px;">(${v.totalAtivos} ativos)</span></span>
       </div>
     </div>
   `;
@@ -1325,15 +1534,15 @@ function equipesPostosCardHtml(title, e){
       <div class="section-title">${title}</div>
       <div class="flex-between" style="padding:6px 0; border-bottom:1px solid var(--border);">
         <span style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px;">Equipes de serviço</span>
-        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${e.equipes}</span>
+        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${e.equipes} <span style="color:var(--ok); font-size:11.5px;">(${e.equipesAtivas} ativas)</span></span>
       </div>
       <div class="flex-between" style="padding:6px 0;">
         <span style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px;">Postos de serviço</span>
-        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${e.postos}</span>
+        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${e.postos} <span style="color:var(--ok); font-size:11.5px;">(${e.postosAtivos} ativos)</span></span>
       </div>
       <div class="flex-between" style="padding:8px 0 0; margin-top:6px; border-top:1px solid var(--border);">
         <span style="color:var(--accent); font-family:'Oswald',sans-serif; font-size:15px;">Total</span>
-        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:17px;">${e.total}</span>
+        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:17px;">${e.total} <span style="color:var(--ok); font-size:13px;">(${e.totalAtivos} ativos)</span></span>
       </div>
     </div>
   `;
@@ -1779,6 +1988,7 @@ async function deleteLaunch(id){
   l.removed = true;
   l.removedAt = Date.now();
   l.removedReason = reason.trim();
+  l.removidoPor = currentUserEmail;
   await persistLaunches();
   renderActiveListView();
 }
@@ -1984,35 +2194,35 @@ function generatePDF(){
   function printQuantBlock(title, q){
     checkPage(60);
     line(title, {bold:true, size:12.5, gap:16});
-    q.entries.forEach(([pat, n]) => {
-      line(`${pat}: ${n}`, {size:10, gap:13});
+    q.entries.forEach(([pat, n, nAtivo]) => {
+      line(`${pat}: ${n} (${nAtivo} ativos)`, {size:10, gap:13});
     });
     y += 4;
-    line(`Oficiais: ${q.oficiais}`, {bold:true, size:10.5, gap:14});
-    line(`Praças: ${q.pracas}`, {bold:true, size:10.5, gap:14});
+    line(`Oficiais: ${q.oficiais} (${q.oficiaisAtivos} ativos)`, {bold:true, size:10.5, gap:14});
+    line(`Praças: ${q.pracas} (${q.pracasAtivos} ativos)`, {bold:true, size:10.5, gap:14});
     if(q.outros > 0){
-      line(`Outros (posto não padronizado): ${q.outros}`, {size:10, gap:13});
+      line(`Outros (posto não padronizado): ${q.outros} (${q.outrosAtivos} ativos)`, {size:10, gap:13});
     }
     y += 2;
-    line(`Total: ${q.total}`, {bold:true, size:12, gap:16});
+    line(`Total: ${q.total} (${q.totalAtivos} ativos)`, {bold:true, size:12, gap:16});
     y += 6;
   }
 
   function printVeiculosBlock(title, v){
     checkPage(40);
     line(title, {bold:true, size:11, gap:14});
-    line(`4 rodas (geral): ${v.carros}`, {size:10, gap:13});
-    line(`2 rodas (motos): ${v.motos}`, {size:10, gap:13});
-    line(`Total de viaturas: ${v.total}`, {bold:true, size:10.5, gap:14});
+    line(`4 rodas (geral): ${v.carros} (${v.carrosAtivos} ativos)`, {size:10, gap:13});
+    line(`2 rodas (motos): ${v.motos} (${v.motosAtivos} ativos)`, {size:10, gap:13});
+    line(`Total de viaturas: ${v.total} (${v.totalAtivos} ativos)`, {bold:true, size:10.5, gap:14});
     y += 6;
   }
 
   function printEquipesPostosBlock(title, e){
     checkPage(40);
     line(title, {bold:true, size:11, gap:14});
-    line(`Equipes de serviço: ${e.equipes}`, {size:10, gap:13});
-    line(`Postos de serviço: ${e.postos}`, {size:10, gap:13});
-    line(`Total: ${e.total}`, {bold:true, size:10.5, gap:14});
+    line(`Equipes de serviço: ${e.equipes} (${e.equipesAtivas} ativas)`, {size:10, gap:13});
+    line(`Postos de serviço: ${e.postos} (${e.postosAtivos} ativos)`, {size:10, gap:13});
+    line(`Total: ${e.total} (${e.totalAtivos} ativos)`, {bold:true, size:10.5, gap:14});
     y += 6;
   }
 
@@ -2281,6 +2491,7 @@ async function saveEditLaunch(){
   l.efetivo = efetivo;
   l.edited = true;
   l.editedAt = Date.now();
+  l.editadoPor = currentUserEmail;
   l.gcoi = false;
   l.gcoiAt = null;
 
