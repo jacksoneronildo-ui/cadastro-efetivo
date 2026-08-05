@@ -77,19 +77,12 @@
 
   <div id="saveBanner"></div>
 
-  <div class="tabs">
-    <div class="tab active" id="tabNew" onclick="switchTab('new')">Lançamento diário</div>
-    <div class="tab" id="tabNewEvento" onclick="switchTab('newEvento')">Lan. em Evento/ Operação</div>
-    <div class="tab" id="tabDay" onclick="switchTab('day')">Relatório de serviços diários</div>
-    <div class="tab" id="tabDayEvento" onclick="switchTab('dayEvento')">Relatório de Evento/ Operação</div>
-    <div class="tab" id="tabQuant" onclick="switchTab('quant')">Quantitativo de Lançamentos</div>
-    <div class="tab" id="tabBusca" onclick="switchTab('busca')">Buscar Policial</div>
-    <div class="tab" id="tabUsuarios" onclick="switchTab('usuarios')" style="display:none;">Usuários</div>
-    <div class="tab" id="tabAtivas" onclick="switchTab('ativas')" style="display:none;">Equipes Ativas</div>
-    <div class="tab" id="tabAuditoria" onclick="switchTab('auditoria')" style="display:none;">Auditoria</div>
+  <div id="viewPainel"></div>
+  <div id="backBar" class="hidden" style="display:flex; align-items:center; gap:8px; margin-bottom:16px; cursor:pointer;" onclick="switchTab('painel')">
+    <span style="color:var(--accent); font-family:'Oswald',sans-serif; font-size:14px;">← Painel</span>
   </div>
 
-  <div id="viewNew"></div>
+  <div id="viewNew" class="hidden"></div>
   <div id="viewNewEvento" class="hidden"></div>
   <div id="viewDay" class="hidden"></div>
   <div id="viewDayEvento" class="hidden"></div>
@@ -134,7 +127,7 @@ let efetivoRowsEvento = [];
 let quantType = 'daily'; // 'daily' | 'evento'
 let quantDate = todayISO();
 let quantLaunches = [];
-let currentTab = 'new';
+let currentTab = 'painel';
 let selectedDate = todayISO();
 let efetivoRows = [];
 let saveErrorMsg = '';
@@ -209,15 +202,9 @@ async function loadAll(){
   await loadStaticCommand();
   await loadEditLockHour();
   await loadActiveWindowHours();
-  const tabUsuarios = document.getElementById('tabUsuarios');
-  if(tabUsuarios) tabUsuarios.style.display = canManageUsers() ? 'block' : 'none';
-  const tabAtivas = document.getElementById('tabAtivas');
-  if(tabAtivas) tabAtivas.style.display = canToggleAtivo() ? 'block' : 'none';
-  const tabAuditoria = document.getElementById('tabAuditoria');
-  if(tabAuditoria) tabAuditoria.style.display = isAdmin() ? 'block' : 'none';
   renderHeader();
   resetNewForm();
-  renderDayView();
+  switchTab('painel');
 }
 
 function launchesKey(date){ return 'launches:' + date; }
@@ -795,15 +782,8 @@ function renderHeader(){
 
 function switchTab(t){
   currentTab = t;
-  document.getElementById('tabNew').classList.toggle('active', t==='new');
-  document.getElementById('tabNewEvento').classList.toggle('active', t==='newEvento');
-  document.getElementById('tabDay').classList.toggle('active', t==='day');
-  document.getElementById('tabDayEvento').classList.toggle('active', t==='dayEvento');
-  document.getElementById('tabQuant').classList.toggle('active', t==='quant');
-  document.getElementById('tabBusca').classList.toggle('active', t==='busca');
-  document.getElementById('tabUsuarios').classList.toggle('active', t==='usuarios');
-  document.getElementById('tabAtivas').classList.toggle('active', t==='ativas');
-  document.getElementById('tabAuditoria').classList.toggle('active', t==='auditoria');
+  document.getElementById('viewPainel').classList.toggle('hidden', t !== 'painel');
+  document.getElementById('backBar').classList.toggle('hidden', t === 'painel');
   document.getElementById('viewNew').classList.toggle('hidden', t!=='new');
   document.getElementById('viewNewEvento').classList.toggle('hidden', t!=='newEvento');
   document.getElementById('viewDay').classList.toggle('hidden', t!=='day');
@@ -813,6 +793,7 @@ function switchTab(t){
   document.getElementById('viewUsuarios').classList.toggle('hidden', t!=='usuarios');
   document.getElementById('viewAtivas').classList.toggle('hidden', t!=='ativas');
   document.getElementById('viewAuditoria').classList.toggle('hidden', t!=='auditoria');
+  if(t==='painel') renderPainel();
   if(t==='day'){ activeBucketType='daily'; loadDateData(selectedDate).then(renderDayView); }
   if(t==='dayEvento'){ activeBucketType='evento'; renderEventoListView(); }
   if(t==='newEvento' && !document.getElementById('opGt')) resetEventoForm();
@@ -823,7 +804,31 @@ function switchTab(t){
   if(t==='auditoria') renderAuditoriaView();
 }
 
-// ---------- NOVO LANÇAMENTO ----------
+function renderPainel(){
+  const items = [
+    { t:'new', icon:'📋', label:'Lançamento diário', show:true },
+    { t:'newEvento', icon:'🏁', label:'Lan. em Evento/ Operação', show:true },
+    { t:'day', icon:'📄', label:'Relatório de serviços diários', show:true },
+    { t:'dayEvento', icon:'📑', label:'Relatório de Evento/ Operação', show:true },
+    { t:'quant', icon:'📊', label:'Quantitativo de Lançamentos', show:true },
+    { t:'busca', icon:'🔎', label:'Buscar Policial', show:true },
+    { t:'ativas', icon:'🟢', label:'Equipes Ativas', show:canToggleAtivo() },
+    { t:'usuarios', icon:'👥', label:'Usuários', show:canManageUsers() },
+    { t:'auditoria', icon:'🕵️', label:'Auditoria', show:isAdmin() },
+  ];
+  document.getElementById('viewPainel').innerHTML = `
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+      ${items.filter(i => i.show).map(i => `
+        <button onclick="switchTab('${i.t}')" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:20px 12px; display:flex; flex-direction:column; align-items:center; gap:8px; cursor:pointer;">
+          <span style="font-size:30px;">${i.icon}</span>
+          <span style="color:var(--text); font-family:'Oswald',sans-serif; font-size:13px; text-align:center; line-height:1.25;">${i.label}</span>
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+
 function resetNewForm(){
   efetivoRows = [
     {id:uid(), patente:"", re:"", nome:"", tel:"", sexo:"M", motorista:false, viatura:null, observacao:""}
@@ -1475,34 +1480,41 @@ async function changeQuantDate(v){
 }
 
 function quantCardHtml(title, q){
+  const maxN = Math.max(1, ...q.entries.map(([, n]) => n));
   const rowsHtml = q.entries.length === 0
     ? `<div class="empty">Nenhum efetivo lançado.</div>`
     : q.entries.map(([pat, n, nAtivo]) => `
-        <div class="flex-between" style="padding:6px 0; border-bottom:1px solid var(--border);">
-          <span style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px;">${pat}</span>
-          <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${n} <span style="color:var(--ok); font-size:11.5px;">(${nAtivo} ativos)</span></span>
+        <div style="margin-bottom:11px;">
+          <div class="flex-between" style="margin-bottom:5px;">
+            <span style="color:var(--text); font-family:'Inter',sans-serif; font-size:13px;">${pat}</span>
+            <span style="font-family:'JetBrains Mono', monospace; font-size:12.5px;"><b style="color:var(--accent);">${n}</b> <span style="color:var(--ok);">(${nAtivo} ativos)</span></span>
+          </div>
+          <div style="background:var(--surface2); border-radius:6px; height:7px; overflow:hidden;">
+            <div style="width:${Math.max(4, Math.round(n / maxN * 100))}%; height:100%; background:linear-gradient(90deg, var(--accent), #c9821f); border-radius:6px;"></div>
+          </div>
         </div>
       `).join('');
   return `
     <div class="card">
-      <div class="section-title">${title}</div>
+      <div class="section-title" style="margin-bottom:14px;">${title}</div>
       ${rowsHtml}
-      <div class="flex-between" style="padding:8px 0 0; margin-top:8px; border-top:1px solid var(--border);">
-        <span style="color:var(--text); font-family:'Oswald',sans-serif; font-size:13px;">Oficiais</span>
-        <span style="color:var(--info); font-family:'JetBrains Mono', monospace; font-size:14px;">${q.oficiais} <span style="color:var(--ok); font-size:11.5px;">(${q.oficiaisAtivos} ativos)</span></span>
-      </div>
-      <div class="flex-between" style="padding:2px 0;">
-        <span style="color:var(--text); font-family:'Oswald',sans-serif; font-size:13px;">Praças</span>
-        <span style="color:var(--info); font-family:'JetBrains Mono', monospace; font-size:14px;">${q.pracas} <span style="color:var(--ok); font-size:11.5px;">(${q.pracasAtivos} ativos)</span></span>
-      </div>
-      ${q.outros > 0 ? `
-      <div class="flex-between" style="padding:2px 0;">
-        <span style="color:var(--muted); font-family:'Oswald',sans-serif; font-size:12.5px;">Outros (posto não padronizado)</span>
-        <span style="color:var(--muted); font-family:'JetBrains Mono', monospace; font-size:13.5px;">${q.outros} (${q.outrosAtivos} ativos)</span>
-      </div>` : ''}
-      <div class="flex-between" style="padding:8px 0 0; margin-top:6px; border-top:1px solid var(--border);">
-        <span style="color:var(--accent); font-family:'Oswald',sans-serif; font-size:15px;">Total</span>
-        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:17px;">${q.total} <span style="color:var(--ok); font-size:13px;">(${q.totalAtivos} ativos)</span></span>
+      ${q.outros > 0 ? `<div class="muted" style="margin:6px 0 4px; font-size:11px;">Outros (posto não padronizado): ${q.outros} (${q.outrosAtivos} ativos)</div>` : ''}
+      <div style="display:flex; gap:8px; margin-top:12px;">
+        <div style="flex:1; background:var(--surface2); border-radius:10px; padding:12px 8px; text-align:center;">
+          <div style="font-family:'Oswald',sans-serif; font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Oficiais</div>
+          <div style="font-family:'JetBrains Mono', monospace; font-size:21px; color:var(--info); margin-top:4px;">${q.oficiais}</div>
+          <div style="font-size:10.5px; color:var(--ok); margin-top:2px;">${q.oficiaisAtivos} ativos</div>
+        </div>
+        <div style="flex:1; background:var(--surface2); border-radius:10px; padding:12px 8px; text-align:center;">
+          <div style="font-family:'Oswald',sans-serif; font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Praças</div>
+          <div style="font-family:'JetBrains Mono', monospace; font-size:21px; color:var(--info); margin-top:4px;">${q.pracas}</div>
+          <div style="font-size:10.5px; color:var(--ok); margin-top:2px;">${q.pracasAtivos} ativos</div>
+        </div>
+        <div style="flex:1; background:linear-gradient(135deg, var(--accent), #c9821f); border-radius:10px; padding:12px 8px; text-align:center;">
+          <div style="font-family:'Oswald',sans-serif; font-size:10.5px; color:#181205; text-transform:uppercase; letter-spacing:0.5px; opacity:0.8;">Total</div>
+          <div style="font-family:'JetBrains Mono', monospace; font-size:21px; color:#181205; margin-top:4px; font-weight:700;">${q.total}</div>
+          <div style="font-size:10.5px; color:#3a2c08; margin-top:2px;">${q.totalAtivos} ativos</div>
+        </div>
       </div>
     </div>
   `;
@@ -1511,18 +1523,26 @@ function quantCardHtml(title, q){
 function veiculosCardHtml(title, v){
   return `
     <div class="card">
-      <div class="section-title">${title}</div>
-      <div class="flex-between" style="padding:6px 0; border-bottom:1px solid var(--border);">
-        <span style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px;">4 rodas (geral)</span>
-        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${v.carros} <span style="color:var(--ok); font-size:11.5px;">(${v.carrosAtivos} ativos)</span></span>
-      </div>
-      <div class="flex-between" style="padding:6px 0;">
-        <span style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px;">2 rodas (motos)</span>
-        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${v.motos} <span style="color:var(--ok); font-size:11.5px;">(${v.motosAtivos} ativos)</span></span>
-      </div>
-      <div class="flex-between" style="padding:8px 0 0; margin-top:6px; border-top:1px solid var(--border);">
-        <span style="color:var(--accent); font-family:'Oswald',sans-serif; font-size:15px;">Total</span>
-        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:17px;">${v.total} <span style="color:var(--ok); font-size:13px;">(${v.totalAtivos} ativos)</span></span>
+      <div class="section-title" style="margin-bottom:14px;">${title}</div>
+      <div style="display:flex; gap:8px;">
+        <div style="flex:1; background:var(--surface2); border-radius:10px; padding:14px 8px; text-align:center;">
+          <div style="font-size:22px;">🚗</div>
+          <div style="font-family:'Oswald',sans-serif; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-top:4px;">4 rodas</div>
+          <div style="font-family:'JetBrains Mono', monospace; font-size:21px; color:var(--accent); margin-top:3px;">${v.carros}</div>
+          <div style="font-size:10.5px; color:var(--ok); margin-top:2px;">${v.carrosAtivos} ativos</div>
+        </div>
+        <div style="flex:1; background:var(--surface2); border-radius:10px; padding:14px 8px; text-align:center;">
+          <div style="font-size:22px;">🏍️</div>
+          <div style="font-family:'Oswald',sans-serif; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-top:4px;">2 rodas</div>
+          <div style="font-family:'JetBrains Mono', monospace; font-size:21px; color:var(--accent); margin-top:3px;">${v.motos}</div>
+          <div style="font-size:10.5px; color:var(--ok); margin-top:2px;">${v.motosAtivos} ativos</div>
+        </div>
+        <div style="flex:1; background:linear-gradient(135deg, var(--accent), #c9821f); border-radius:10px; padding:14px 8px; text-align:center;">
+          <div style="font-size:22px;">🚙</div>
+          <div style="font-family:'Oswald',sans-serif; font-size:10px; color:#181205; text-transform:uppercase; letter-spacing:0.5px; margin-top:4px; opacity:0.8;">Total</div>
+          <div style="font-family:'JetBrains Mono', monospace; font-size:21px; color:#181205; margin-top:3px; font-weight:700;">${v.total}</div>
+          <div style="font-size:10.5px; color:#3a2c08; margin-top:2px;">${v.totalAtivos} ativos</div>
+        </div>
       </div>
     </div>
   `;
@@ -1531,18 +1551,26 @@ function veiculosCardHtml(title, v){
 function equipesPostosCardHtml(title, e){
   return `
     <div class="card">
-      <div class="section-title">${title}</div>
-      <div class="flex-between" style="padding:6px 0; border-bottom:1px solid var(--border);">
-        <span style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px;">Equipes de serviço</span>
-        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${e.equipes} <span style="color:var(--ok); font-size:11.5px;">(${e.equipesAtivas} ativas)</span></span>
-      </div>
-      <div class="flex-between" style="padding:6px 0;">
-        <span style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px;">Postos de serviço</span>
-        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:14px;">${e.postos} <span style="color:var(--ok); font-size:11.5px;">(${e.postosAtivos} ativos)</span></span>
-      </div>
-      <div class="flex-between" style="padding:8px 0 0; margin-top:6px; border-top:1px solid var(--border);">
-        <span style="color:var(--accent); font-family:'Oswald',sans-serif; font-size:15px;">Total</span>
-        <span style="color:var(--accent); font-family:'JetBrains Mono', monospace; font-size:17px;">${e.total} <span style="color:var(--ok); font-size:13px;">(${e.totalAtivos} ativos)</span></span>
+      <div class="section-title" style="margin-bottom:14px;">${title}</div>
+      <div style="display:flex; gap:8px;">
+        <div style="flex:1; background:var(--surface2); border-radius:10px; padding:14px 8px; text-align:center;">
+          <div style="font-size:22px;">🚓</div>
+          <div style="font-family:'Oswald',sans-serif; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-top:4px;">Equipes</div>
+          <div style="font-family:'JetBrains Mono', monospace; font-size:21px; color:var(--accent); margin-top:3px;">${e.equipes}</div>
+          <div style="font-size:10.5px; color:var(--ok); margin-top:2px;">${e.equipesAtivas} ativas</div>
+        </div>
+        <div style="flex:1; background:var(--surface2); border-radius:10px; padding:14px 8px; text-align:center;">
+          <div style="font-size:22px;">📍</div>
+          <div style="font-family:'Oswald',sans-serif; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-top:4px;">Postos</div>
+          <div style="font-family:'JetBrains Mono', monospace; font-size:21px; color:var(--accent); margin-top:3px;">${e.postos}</div>
+          <div style="font-size:10.5px; color:var(--ok); margin-top:2px;">${e.postosAtivos} ativos</div>
+        </div>
+        <div style="flex:1; background:linear-gradient(135deg, var(--accent), #c9821f); border-radius:10px; padding:14px 8px; text-align:center;">
+          <div style="font-size:22px;">🎯</div>
+          <div style="font-family:'Oswald',sans-serif; font-size:10px; color:#181205; text-transform:uppercase; letter-spacing:0.5px; margin-top:4px; opacity:0.8;">Total</div>
+          <div style="font-family:'JetBrains Mono', monospace; font-size:21px; color:#181205; margin-top:3px; font-weight:700;">${e.total}</div>
+          <div style="font-size:10.5px; color:#3a2c08; margin-top:2px;">${e.totalAtivos} ativos</div>
+        </div>
       </div>
     </div>
   `;
@@ -1915,12 +1943,16 @@ function launchCard(l){
           ${l.ativo === false ? '⚫ Encerrada' : '🟢 Ativa'}
         </div>
       `}
-      <button class="btn btn-accent btn-block" style="margin-top:10px;" onclick="openGcoi('${l.id}')">
-        📋 CADASTRO GCOI ${l.gcoi ? '(reabrir)' : ''}
-      </button>
-      <button class="btn btn-ghost btn-block" style="margin-top:8px; background:#1f3d2e; border-color:#2f5c44; color:#7fd99a;" onclick="shareWhatsApp('${l.id}')">
-        💬 Compartilhar via WhatsApp
-      </button>
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        <button class="btn btn-accent" style="flex:1;" onclick="openGcoi('${l.id}')">
+          📋 CADASTRO GCOI ${l.gcoi ? '(reabrir)' : ''}
+        </button>
+        ${canShareWhatsApp() ? `
+        <button onclick="shareWhatsApp('${l.id}')" aria-label="Compartilhar via WhatsApp" style="background:#25D366; border:none; border-radius:8px; width:48px; flex-shrink:0; display:flex; align-items:center; justify-content:center; cursor:pointer;">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="#ffffff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12.002 2c-5.514 0-9.997 4.483-9.997 9.997 0 1.763.462 3.483 1.34 4.997L2 22l5.126-1.345a9.96 9.96 0 0 0 4.876 1.24h.004c5.514 0 9.997-4.483 9.997-9.998C21.999 6.483 17.516 2 12.002 2zm0 18.187h-.003a8.19 8.19 0 0 1-4.174-1.145l-.299-.178-3.104.815.828-3.026-.195-.31a8.17 8.17 0 0 1-1.256-4.35c0-4.522 3.68-8.202 8.207-8.202 2.191 0 4.251.854 5.8 2.404a8.146 8.146 0 0 1 2.404 5.802c0 4.523-3.68 8.19-8.208 8.19z"/></svg>
+        </button>
+        ` : ''}
+      </div>
     </div>
   `;
 }
@@ -1944,6 +1976,10 @@ async function openGcoi(id){
 }
 
 function shareWhatsApp(id){
+  if(!canShareWhatsApp()){
+    alert('Seu nível de acesso não permite compartilhar via WhatsApp.');
+    return;
+  }
   const l = launches.find(x => x.id === id);
   if(!l) return;
 
@@ -2544,6 +2580,7 @@ function canEditComando(){ return isAdmin() || isReduzido(); }
 function canChangeLockHour(){ return isAdmin(); }
 function canManageUsers(){ return isAdmin() || isReduzido(); }
 function canToggleAtivo(){ return isAdmin() || isReduzido(); }
+function canShareWhatsApp(){ return isAdmin() || isReduzido(); }
 function creatableLevels(){
   if(isAdmin()) return ['admin', 'reduzido', 'geral'];
   if(isReduzido()) return ['geral'];
