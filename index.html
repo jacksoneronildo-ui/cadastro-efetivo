@@ -1926,8 +1926,19 @@ async function addUsuario(){
     try{
       await secAuth.createUserWithEmailAndPassword(email, senha);
     }catch(e){
-      if(e.code !== 'auth/email-already-in-use') throw e;
-      // já existe conta de login pra esse e-mail: só ajustamos a permissão abaixo
+      if(e.code === 'auth/email-already-in-use'){
+        await secAuth.signOut().catch(()=>{});
+        alert(
+          `Este e-mail já possui uma conta de login no Firebase Authentication.\n\n` +
+          `A senha informada aqui NÃO foi aplicada — a conta continua com a senha antiga, ` +
+          `por isso o usuário não conseguiria entrar com a senha nova.\n\n` +
+          `Para recadastrar com senha nova: apague a conta desse e-mail no Firebase Console ` +
+          `(Authentication > Users) e cadastre de novo aqui.`
+        );
+        if(btn){ btn.disabled = false; btn.textContent = 'Adicionar'; }
+        return;
+      }
+      throw e;
     }
     await secAuth.signOut();
 
