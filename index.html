@@ -56,6 +56,8 @@
   .modal-head{display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;}
   .close{background:none; border:none; color:var(--muted); font-size:20px; cursor:pointer;}
   .hidden{display:none;}
+  #backBar{display:flex;}
+  #backBar.hidden{display:none;}
   .flex-between{display:flex; justify-content:space-between; align-items:center;}
   .badge{font-size:10.5px; padding:2px 8px; border-radius:10px; font-family:'Inter',sans-serif;}
 </style>
@@ -78,7 +80,7 @@
   <div id="saveBanner"></div>
 
   <div id="viewPainel"></div>
-  <div id="backBar" class="hidden" style="display:flex; align-items:center; gap:8px; margin-bottom:16px; cursor:pointer;" onclick="switchTab('painel')">
+  <div id="backBar" class="hidden" style="align-items:center; gap:8px; margin-bottom:16px; cursor:pointer;" onclick="switchTab('painel')">
     <span style="color:var(--accent); font-family:'Oswald',sans-serif; font-size:14px;">← Painel</span>
   </div>
 
@@ -417,7 +419,7 @@ function renderAuditoriaView(){
   document.getElementById('viewAuditoria').innerHTML = `
     <div class="card">
       <label>Nome ou e-mail do usuário (opcional)</label>
-      <input type="text" id="auditUsuario" placeholder="Deixe em branco para ver todos" />
+      <input type="text" id="auditUsuario" placeholder="Ex: Eronildo ou o e-mail" />
       <div class="row">
         <div>
           <label>De</label>
@@ -454,6 +456,12 @@ async function runAuditoria(){
 
   resEl.innerHTML = `<div class="empty">Gerando auditoria entre ${fmtDateBR(de)} e ${fmtDateBR(ate)}...</div>`;
 
+  let emailToNome = {};
+  try{
+    const permSnap = await db.collection(PERMISSIONS_COLLECTION).get();
+    permSnap.forEach(doc => { emailToNome[doc.id] = doc.data().nome || ''; });
+  }catch(e){}
+
   const jobs = [];
   dateList.forEach(d => {
     jobs.push(storageGet(launchesKey(d)).then(r => ({ tipo: 'daily', arr: JSON.parse(r.value) })).catch(() => null));
@@ -468,22 +476,22 @@ async function runAuditoria(){
       const headerLine = [l.evento, l.gt, l.cidade, l.codigo].filter(Boolean).join(' - ') || '(sem cabeçalho)';
       const base = { data: l.date, tipoLancamento: item.tipo === 'evento' ? 'Evento/ Operação' : 'Serviço diário', headerLine };
       if(l.criadoPor){
-        registros.push({ ...base, acao: 'Cadastro', usuario: l.criadoPor, quando: l.createdAt, detalhe: '' });
+        registros.push({ ...base, acao: 'Cadastro', usuario: l.criadoPor, nomeUsuario: emailToNome[l.criadoPor] || '', quando: l.createdAt, detalhe: '' });
       }
       if(l.edited && l.editadoPor){
-        registros.push({ ...base, acao: 'Edição', usuario: l.editadoPor, quando: l.editedAt, detalhe: '' });
+        registros.push({ ...base, acao: 'Edição', usuario: l.editadoPor, nomeUsuario: emailToNome[l.editadoPor] || '', quando: l.editedAt, detalhe: '' });
       }
       if(l.removed && l.removidoPor){
-        registros.push({ ...base, acao: 'Remoção', usuario: l.removidoPor, quando: l.removedAt, detalhe: l.removedReason || '' });
+        registros.push({ ...base, acao: 'Remoção', usuario: l.removidoPor, nomeUsuario: emailToNome[l.removidoPor] || '', quando: l.removedAt, detalhe: l.removedReason || '' });
       }
       if(l.ativoAlteradoPor && l.ativoAlteradoEm){
-        registros.push({ ...base, acao: l.ativo === false ? 'Encerrou equipe/posto' : 'Reabriu equipe/posto', usuario: l.ativoAlteradoPor, quando: l.ativoAlteradoEm, detalhe: '' });
+        registros.push({ ...base, acao: l.ativo === false ? 'Encerrou equipe/posto' : 'Reabriu equipe/posto', usuario: l.ativoAlteradoPor, nomeUsuario: emailToNome[l.ativoAlteradoPor] || '', quando: l.ativoAlteradoEm, detalhe: '' });
       }
     });
   });
 
   const filtrados = filtroUsuario
-    ? registros.filter(r => (r.usuario || '').toLowerCase().includes(filtroUsuario))
+    ? registros.filter(r => (r.usuario || '').toLowerCase().includes(filtroUsuario) || (r.nomeUsuario || '').toLowerCase().includes(filtroUsuario))
     : registros;
 
   filtrados.sort((a, b) => b.quando - a.quando);
@@ -506,7 +514,7 @@ async function runAuditoria(){
           <span style="color:var(--accent); font-family:'Oswald',sans-serif; font-size:13.5px;">${r.acao}</span>
           <span class="muted" style="font-family:'JetBrains Mono', monospace; font-size:11px;">${fmtWhen(r.quando)}</span>
         </div>
-        <div style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px; margin-top:4px;">${r.usuario}</div>
+        <div style="color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px; margin-top:4px;">${r.nomeUsuario ? `${r.nomeUsuario} <span class="muted" style="font-size:12px;">(${r.usuario})</span>` : r.usuario}</div>
         <div class="muted" style="margin-top:4px;">${fmtDateBR(r.data)} · ${r.tipoLancamento} · ${r.headerLine}</div>
         ${r.detalhe ? `<div class="muted" style="margin-top:4px;">Motivo: ${r.detalhe}</div>` : ''}
       </div>
@@ -518,7 +526,8 @@ function generateAuditoriaXLSX(){
   if(auditoriaCache.length === 0) return;
   const rows = auditoriaCache.map(r => ({
     'Ação': r.acao,
-    'Usuário': r.usuario,
+    'Nome': r.nomeUsuario || '',
+    'E-mail': r.usuario,
     'Quando': fmtWhen(r.quando),
     'Data do serviço': fmtDateBR(r.data),
     'Tipo': r.tipoLancamento,
@@ -569,7 +578,7 @@ function generateAuditoriaPDF(){
 
   auditoriaCache.forEach(r => {
     checkPage(70);
-    line(`${r.acao} — ${r.usuario}`, {bold:true, size:11.5, gap:15});
+    line(`${r.acao} — ${r.nomeUsuario ? `${r.nomeUsuario} (${r.usuario})` : r.usuario}`, {bold:true, size:11.5, gap:15});
     line(`Quando: ${fmtWhen(r.quando)}`, {size:9.5, gap:12});
     line(`Serviço: ${r.headerLine} (${r.tipoLancamento}, data ${fmtDateBR(r.data)})`, {size:9.5, gap:12});
     if(r.detalhe){
@@ -1923,26 +1932,30 @@ function launchCard(l){
     : '';
   const preview = `${headerLine}\n\n📆 Data: ${fmtDatePT(l.date)}\n⏰ Horário: ${l.inicio} às ${l.fim}\n\nEFETIVO:\n\n${efetivoTxt}${viaturaTxt}`;
   const editable = isLaunchEditable(l);
+  const statusChip = canToggleAtivo()
+    ? `<button onclick="toggleAtivo('${l.id}')" style="background:${l.ativo === false ? '#3A2418' : '#1f3d2e'}; border:1px solid ${l.ativo === false ? 'var(--danger)' : '#2f5c44'}; color:${l.ativo === false ? '#F2B8A9' : '#7fd99a'}; border-radius:20px; padding:6px 13px; font-size:12px; font-family:'Inter',sans-serif; cursor:pointer;">${l.ativo === false ? '⚫ Encerrada' : '🟢 Ativa'}</button>`
+    : `<span style="background:var(--surface2); border:1px solid var(--border); color:${l.ativo === false ? 'var(--danger)' : '#7fd99a'}; border-radius:20px; padding:6px 13px; font-size:12px; font-family:'Inter',sans-serif;">${l.ativo === false ? '⚫ Encerrada' : '🟢 Ativa'}</span>`;
+  const editarBtn = editable
+    ? `<button onclick="openEditLaunch('${l.id}')" style="background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:20px; padding:6px 13px; font-size:12px; font-family:'Inter',sans-serif; cursor:pointer;">✏️ Editar</button>`
+    : '';
+  const removerBtn = (editable && canRemoveLaunch())
+    ? `<button onclick="deleteLaunch('${l.id}')" style="background:transparent; border:1px solid var(--danger); color:var(--danger); border-radius:20px; padding:6px 13px; font-size:12px; font-family:'Inter',sans-serif; cursor:pointer;">🗑️ Remover</button>`
+    : '';
+  const lockMsg = !editable
+    ? `<span style="background:var(--surface2); border:1px solid var(--border); color:var(--muted); border-radius:20px; padding:6px 13px; font-size:11px; font-family:'Inter',sans-serif;">🔒 Prazo encerrado</span>`
+    : '';
   return `
     <div class="card">
       <div class="flex-between">
         <span class="muted">${l.inicio}–${l.fim} · ${l.efetivo.length} policial(is) ${l.edited ? '<span class="badge" style="background:var(--info); color:#0c1a26; margin-left:6px;">✏️ Editado</span>' : ''} ${l.gcoi ? '<span class="badge" style="background:var(--ok); color:#0c1a26; margin-left:6px;">GCOI ✓</span>' : ''}</span>
-        <div style="display:flex; gap:8px;">
-          ${editable ? `<button class="btn btn-ghost" onclick="openEditLaunch('${l.id}')">Editar</button>` : ''}
-          ${editable && canRemoveLaunch() ? `<button class="btn btn-danger" onclick="deleteLaunch('${l.id}')">Remover</button>` : ''}
-          ${!editable ? `<span class="muted" style="font-size:11px;">🔒 Prazo de edição encerrado</span>` : ''}
-        </div>
+      </div>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;">
+        ${statusChip}
+        ${editarBtn}
+        ${removerBtn}
+        ${lockMsg}
       </div>
       <div class="launch-preview">${preview}</div>
-      ${canToggleAtivo() ? `
-        <button class="btn btn-block" style="margin-top:10px; background:${l.ativo === false ? '#3A2418' : '#1f3d2e'}; border:1px solid ${l.ativo === false ? 'var(--danger)' : '#2f5c44'}; color:${l.ativo === false ? '#F2B8A9' : '#7fd99a'};" onclick="toggleAtivo('${l.id}')">
-          ${l.ativo === false ? '⚫ Encerrada — toque para reabrir' : '🟢 Ativa — toque para encerrar'}
-        </button>
-      ` : `
-        <div class="muted" style="margin-top:10px; text-align:center; font-size:12px;">
-          ${l.ativo === false ? '⚫ Encerrada' : '🟢 Ativa'}
-        </div>
-      `}
       <div style="display:flex; gap:8px; margin-top:10px;">
         <button class="btn btn-accent" style="flex:1;" onclick="openGcoi('${l.id}')">
           📋 CADASTRO GCOI ${l.gcoi ? '(reabrir)' : ''}
