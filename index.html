@@ -132,8 +132,8 @@ function fmtWhen(ts){
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 
 const MOTTO = "9ª CIPM: TRABALHO, FORÇA E DEDICAÇÃO";
-const OFICIAIS_PATENTES = ["CEL PM", "TEN CEL PM", "MAJ PM", "CAP PM", "1º TEN PM", "2º TEN PM"];
-const PRACAS_PATENTES = ["SUBTEN PM", "1º SGT PM", "2º SGT PM", "3º SGT PM", "CB PM", "SD PM"];
+const OFICIAIS_PATENTES = ["CEL PM", "TEN CEL PM", "MAJ PM", "CAP PM", "1º TEN PM", "2º TEN PM", "ASP PM"];
+const PRACAS_PATENTES = ["ST PM", "1º SGT PM", "2º SGT PM", "3º SGT PM", "CB PM", "SD PM"];
 let lastHeader = { gt:"", cidade:"", codigo:"" };
 let launches = [];
 let dailyCommandCurrent = {}; // { comando, subcomando, oficialOperacoes } — referente à selectedDate
@@ -144,6 +144,7 @@ let officerIndex = []; // [{ nome, re, patente }] — diretório de policiais j�
 let vehicleIndex = []; // [{ placa, modelo, pat }] — diretório de viaturas já cadastradas alguma vez
 let editLockHour = 8; // horário (0-23) do dia seguinte até quando um lançamento pode ser editado/removido
 let activeWindowHours = 6; // horas após o término previsto em que a equipe/posto ainda é considerada ativa por padrão
+let whatsappShareConfig = { reduzido: true, geral: false }; // quem pode compartilhar via WhatsApp, além do admin
 let efetivoRowsEvento = [];
 let quantType = 'daily'; // 'daily' | 'evento'
 let quantDate = todayISO();
@@ -225,6 +226,7 @@ async function loadAll(){
   await loadStaticCommand();
   await loadEditLockHour();
   await loadActiveWindowHours();
+  await loadWhatsappShareConfig();
   renderHeader();
   resetNewForm();
   switchTab('painel');
@@ -277,6 +279,16 @@ async function loadActiveWindowHours(){
 }
 async function persistActiveWindowHours(){
   await saveKey('active-window-hours', activeWindowHours);
+}
+
+async function loadWhatsappShareConfig(){
+  try{
+    const r = await storageGet('whatsapp-share-config');
+    whatsappShareConfig = (r && r.value) ? JSON.parse(r.value) : { reduzido: true, geral: false };
+  }catch(e){ whatsappShareConfig = { reduzido: true, geral: false }; }
+}
+async function persistWhatsappShareConfig(){
+  await saveKey('whatsapp-share-config', whatsappShareConfig);
 }
 
 async function persistEditLockHour(){
@@ -784,6 +796,13 @@ function openConfigModal(){
         <div class="muted" style="margin-top:8px; margin-bottom:16px;">
           Uma equipe/posto de serviço continua aparecendo como "possivelmente ativa" até esse número de horas depois do horário de término previsto, a menos que seja encerrada manualmente antes.
         </div>
+        <label>Compartilhar via WhatsApp</label>
+        <label style="display:flex; align-items:center; gap:8px; text-transform:none; letter-spacing:0; margin-bottom:8px;">
+          <input type="checkbox" id="cfgWhatsappReduzido" style="width:auto; margin:0;" ${whatsappShareConfig.reduzido ? 'checked' : ''} /> Permitir para nível Reduzido
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; text-transform:none; letter-spacing:0; margin-bottom:16px;">
+          <input type="checkbox" id="cfgWhatsappGeral" style="width:auto; margin:0;" ${whatsappShareConfig.geral ? 'checked' : ''} /> Permitir para nível Geral
+        </label>
         <button class="btn btn-accent btn-block" onclick="saveConfigModal()">Salvar</button>
       </div>
     </div>
@@ -793,8 +812,13 @@ function closeConfigModal(){ document.getElementById('modalRoot').innerHTML = ''
 async function saveConfigModal(){
   editLockHour = parseInt(document.getElementById('cfgEditLockHour').value, 10);
   activeWindowHours = parseInt(document.getElementById('cfgActiveWindowHours').value, 10);
+  whatsappShareConfig = {
+    reduzido: document.getElementById('cfgWhatsappReduzido').checked,
+    geral: document.getElementById('cfgWhatsappGeral').checked
+  };
   await persistEditLockHour();
   await persistActiveWindowHours();
+  await persistWhatsappShareConfig();
   closeConfigModal();
   renderActiveListView();
 }
@@ -1108,8 +1132,8 @@ function renderEfetivoRows(){
       ${efetivoRows.length > 1 ? `<button class="rm" onclick="removeEfetivoRow('${r.id}')">✕</button>` : ''}
       <div class="row">
         <div>
-          <label>Posto/ Graduação</label>
-          <input list="patentes" value="${r.patente}" placeholder="Ex: 2º SGT PM" onchange="updateRow('${r.id}','patente',this.value)" />
+          <label>Nome</label>
+          <input list="policiaisConhecidos" value="${r.nome}" placeholder="Ex: ERONILDO" onchange="onNomeChangeNew('${r.id}',this.value)" />
         </div>
         <div>
           <label>Sexo</label>
@@ -1121,7 +1145,7 @@ function renderEfetivoRows(){
       </div>
       <div class="row">
         <div><label>Matrícula</label><input value="${r.re}" placeholder="Ex: 1064720" onchange="updateRow('${r.id}','re',this.value)" /></div>
-        <div><label>Nome</label><input list="policiaisConhecidos" value="${r.nome}" placeholder="Ex: ERONILDO" onchange="onNomeChangeNew('${r.id}',this.value)" /></div>
+        <div><label>Posto/ Graduação</label><input list="patentes" value="${r.patente}" placeholder="Ex: 2º SGT PM" onchange="updateRow('${r.id}','patente',this.value)" /></div>
       </div>
       <label>Telefone</label>
       <input value="${r.tel}" placeholder="Ex: 87 98123-4871" onchange="updateRow('${r.id}','tel',this.value)" style="margin-bottom:0;" />
@@ -1162,7 +1186,8 @@ function renderEfetivoRows(){
       <option value="3º SGT PM"></option>
       <option value="2º SGT PM"></option>
       <option value="1º SGT PM"></option>
-      <option value="SUBTEN PM"></option>
+      <option value="ST PM"></option>
+      <option value="ASP PM"></option>
       <option value="2º TEN PM"></option>
       <option value="1º TEN PM"></option>
       <option value="CAP PM"></option>
@@ -1360,8 +1385,8 @@ function renderEfetivoRowsEvento(){
       ${efetivoRowsEvento.length > 1 ? `<button class="rm" onclick="removeEfetivoRowEvento('${r.id}')">✕</button>` : ''}
       <div class="row">
         <div>
-          <label>Posto/ Graduação</label>
-          <input list="patentes" value="${r.patente}" placeholder="Ex: 2º SGT PM" onchange="updateRowEvento('${r.id}','patente',this.value)" />
+          <label>Nome</label>
+          <input list="policiaisConhecidos" value="${r.nome}" placeholder="Ex: ERONILDO" onchange="onNomeChangeEvento('${r.id}',this.value)" />
         </div>
         <div>
           <label>Sexo</label>
@@ -1373,7 +1398,7 @@ function renderEfetivoRowsEvento(){
       </div>
       <div class="row">
         <div><label>Matrícula</label><input value="${r.re}" placeholder="Ex: 1064720" onchange="updateRowEvento('${r.id}','re',this.value)" /></div>
-        <div><label>Nome</label><input list="policiaisConhecidos" value="${r.nome}" placeholder="Ex: ERONILDO" onchange="onNomeChangeEvento('${r.id}',this.value)" /></div>
+        <div><label>Posto/ Graduação</label><input list="patentes" value="${r.patente}" placeholder="Ex: 2º SGT PM" onchange="updateRowEvento('${r.id}','patente',this.value)" /></div>
       </div>
       <label>Telefone</label>
       <input value="${r.tel}" placeholder="Ex: 87 98123-4871" onchange="updateRowEvento('${r.id}','tel',this.value)" style="margin-bottom:0;" />
@@ -2610,8 +2635,8 @@ function renderEfetivoRowsEdit(){
       ${efetivoRowsEdit.length > 1 ? `<button class="rm" onclick="removeEfetivoRowEdit('${r.id}')">✕</button>` : ''}
       <div class="row">
         <div>
-          <label>Posto/ Graduação</label>
-          <input list="patentes" value="${r.patente}" onchange="updateRowEdit('${r.id}','patente',this.value)" />
+          <label>Nome</label>
+          <input list="policiaisConhecidos" value="${r.nome}" onchange="onNomeChangeEdit('${r.id}',this.value)" />
         </div>
         <div>
           <label>Sexo</label>
@@ -2623,7 +2648,7 @@ function renderEfetivoRowsEdit(){
       </div>
       <div class="row">
         <div><label>Matrícula</label><input value="${r.re}" onchange="updateRowEdit('${r.id}','re',this.value)" /></div>
-        <div><label>Nome</label><input list="policiaisConhecidos" value="${r.nome}" onchange="onNomeChangeEdit('${r.id}',this.value)" /></div>
+        <div><label>Posto/ Graduação</label><input list="patentes" value="${r.patente}" onchange="updateRowEdit('${r.id}','patente',this.value)" /></div>
       </div>
       <label>Telefone</label>
       <input value="${r.tel}" onchange="updateRowEdit('${r.id}','tel',this.value)" style="margin-bottom:0;" />
@@ -2800,7 +2825,12 @@ function canEditComando(){ return isAdmin() || isReduzido(); }
 function canChangeLockHour(){ return isAdmin(); }
 function canManageUsers(){ return isAdmin() || isReduzido(); }
 function canToggleAtivo(){ return isAdmin() || isReduzido(); }
-function canShareWhatsApp(){ return isAdmin() || isReduzido(); }
+function canShareWhatsApp(){
+  if(isAdmin()) return true;
+  if(isReduzido()) return !!whatsappShareConfig.reduzido;
+  if(isGeral()) return !!whatsappShareConfig.geral;
+  return false;
+}
 function canSeeNotifications(){ return isAdmin() || isReduzido(); }
 function creatableLevels(){
   if(isAdmin()) return ['admin', 'reduzido', 'geral'];
