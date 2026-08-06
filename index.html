@@ -91,6 +91,8 @@
     <button class="gear" onclick="logout()" aria-label="Sair" style="margin-left:6px;">🚪</button>
   </div>
 
+  <div id="viewAsBar"></div>
+
   <div id="saveBanner"></div>
 
   <div id="viewPainel"></div>
@@ -178,7 +180,8 @@ function getSecondaryAuth(){
 }
 const PERMISSIONS_COLLECTION = 'permissions';
 let currentUserEmail = null;
-let currentUserLevel = null; // 'admin' | 'reduzido' | 'geral'
+let currentUserLevel = null; // 'admin' | 'reduzido' | 'geral' — nível efetivo (pode estar simulado)
+let realUserLevel = null; // nível real do usuário logado, nunca simulado
 let currentUserNome = null;
 const KV_COLLECTION = 'kv';
 
@@ -949,6 +952,32 @@ function renderHeader(){
   document.getElementById('unitSub').textContent = `9ª CIPM · ${currentUserNome || currentUserEmail || ''}`;
   const gearBtn = document.querySelector('.gear');
   if(gearBtn) gearBtn.style.display = canChangeLockHour() ? 'block' : 'none';
+  renderViewAsBar();
+}
+
+function renderViewAsBar(){
+  const el = document.getElementById('viewAsBar');
+  if(!el) return;
+  if(realUserLevel !== 'admin'){ el.innerHTML = ''; return; }
+  const simulando = currentUserLevel !== realUserLevel;
+  el.innerHTML = `
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; background:${simulando ? '#3A2E12' : 'var(--surface)'}; border:1px solid ${simulando ? 'var(--accent)' : 'var(--border)'}; border-radius:8px; padding:8px 10px; margin-bottom:14px;">
+      <span style="font-family:'Inter',sans-serif; font-size:12.5px; color:${simulando ? 'var(--accent)' : 'var(--muted)'};">${simulando ? '🔍 Visualizando como:' : 'Visualizar como:'}</span>
+      <select id="viewAsSelect" onchange="setViewAsLevel(this.value)" style="margin-bottom:0; padding:4px 8px; width:auto;">
+        <option value="admin" ${currentUserLevel==='admin'?'selected':''}>Admin (meu nível)</option>
+        <option value="reduzido" ${currentUserLevel==='reduzido'?'selected':''}>Reduzido</option>
+        <option value="geral" ${currentUserLevel==='geral'?'selected':''}>Geral</option>
+      </select>
+      ${simulando ? `<button class="btn btn-ghost" style="padding:4px 10px; font-size:12px;" onclick="setViewAsLevel('admin')">Voltar ao normal</button>` : ''}
+    </div>
+  `;
+}
+
+function setViewAsLevel(lvl){
+  if(realUserLevel !== 'admin') return;
+  currentUserLevel = lvl;
+  switchTab('painel');
+  renderHeader();
 }
 
 function switchTab(t){
@@ -2893,6 +2922,7 @@ async function checkPermissionAndStart(user){
       return;
     }
     currentUserLevel = snap.data().nivel || 'geral';
+    realUserLevel = currentUserLevel;
     currentUserNome = snap.data().nome || '';
     document.getElementById('app').innerHTML = APP_SHELL_HTML;
     await loadAll();
@@ -2908,6 +2938,7 @@ auth.onAuthStateChanged((user) => {
   } else {
     currentUserEmail = null;
     currentUserLevel = null;
+    realUserLevel = null;
     currentUserNome = null;
     renderLoginScreen();
   }
