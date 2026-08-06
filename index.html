@@ -972,7 +972,7 @@ function renderPainel(){
     { t:'quant', icon:'📊', label:'Quantitativo de Lançamentos', show:true },
     { t:'busca', icon:'🔎', label:'Buscar Policial', show:true },
     { t:'ativas', icon:'🟢', label:'Equipes Ativas', show:canToggleAtivo() },
-    { t:'notificacoes', icon:'🔔', label:'Notificações', show:true, badge:naoLidas },
+    { t:'notificacoes', icon:'🔔', label:'Notificações', show:canSeeNotifications(), badge:naoLidas },
     { t:'usuarios', icon:'👥', label:'Usuários', show:canManageUsers() },
     { t:'auditoria', icon:'🕵️', label:'Auditoria', show:isAdmin() },
   ];
@@ -2746,6 +2746,7 @@ function canChangeLockHour(){ return isAdmin(); }
 function canManageUsers(){ return isAdmin() || isReduzido(); }
 function canToggleAtivo(){ return isAdmin() || isReduzido(); }
 function canShareWhatsApp(){ return isAdmin() || isReduzido(); }
+function canSeeNotifications(){ return isAdmin() || isReduzido(); }
 function creatableLevels(){
   if(isAdmin()) return ['admin', 'reduzido', 'geral'];
   if(isReduzido()) return ['geral'];
@@ -2868,7 +2869,7 @@ async function checkPermissionAndStart(user){
     currentUserLevel = snap.data().nivel || 'geral';
     document.getElementById('app').innerHTML = APP_SHELL_HTML;
     await loadAll();
-    initNotifications();
+    if(canSeeNotifications()) initNotifications();
   }catch(e){
     document.getElementById('app').innerHTML = `<div style="padding:20px; color:var(--danger);">Erro ao verificar permissões: ${e.message}</div>`;
   }
