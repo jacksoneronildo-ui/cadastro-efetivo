@@ -93,10 +93,13 @@
   <div id="viewUsuarios" class="hidden"></div>
   <div id="viewAtivas" class="hidden"></div>
   <div id="viewAuditoria" class="hidden"></div>
+  <div id="viewNotificacoes" class="hidden"></div>
 </div>
 
 <div id="modalRoot"></div>
 </div>
+
+<div id="floatingNotifs" style="position:fixed; top:16px; left:12px; right:12px; z-index:9999; pointer-events:none; max-width:520px; margin:0 auto;"></div>
 
 <script>
 const APP_SHELL_HTML = document.getElementById('app').innerHTML;
@@ -319,6 +322,150 @@ function detectScheduleConflicts(list){
     }
   });
   return conflicts;
+}
+
+// ---------- NOTIFICAÇÕES ----------
+let notifications = [];
+let notifSeenIds = new Set();
+let notifPollTimer = null;
+
+function loadNotifState(){
+  try{
+    const raw = localStorage.getItem('efetivo_notif_list');
+    notifications = raw ? JSON.parse(raw) : [];
+  }catch(e){ notifications = []; }
+  try{
+    const raw = localStorage.getItem('efetivo_notif_seen');
+    notifSeenIds = new Set(raw ? JSON.parse(raw) : []);
+  }catch(e){ notifSeenIds = new Set(); }
+}
+function saveNotifState(){
+  try{ localStorage.setItem('efetivo_notif_list', JSON.stringify(notifications.slice(0, 50))); }catch(e){}
+  try{ localStorage.setItem('efetivo_notif_seen', JSON.stringify([...notifSeenIds].slice(-800))); }catch(e){}
+}
+
+function unreadNotifCount(){
+  return notifications.filter(n => !n.lida).length;
+}
+
+function notifStyle(tipo){
+  if(tipo === 'conflito') return { bg:'#3A2418', border:'var(--danger)', text:'#F2B8A9', icon:'⚠️' };
+  if(tipo === 'edicao') return { bg:'#1a2a3a', border:'var(--info)', text:'#bcd6f5', icon:'✏️' };
+  return { bg:'#1f3d2e', border:'#2f5c44', text:'#7fd99a', icon:'🆕' }; // cadastro
+}
+
+async function checkNotifications(silent){
+  const hoje = todayISO();
+  let daily = [], evento = [];
+  try{ const r = await storageGet(launchesKey(hoje)); daily = (r && r.value) ? JSON.parse(r.value) : []; }catch(e){}
+  try{ const r = await storageGet(eventLaunchesKey(hoje)); evento = (r && r.value) ? JSON.parse(r.value) : []; }catch(e){}
+
+  const novas = [];
+
+  function processList(list, tipoLabel){
+    list.forEach(l => {
+      const headerLine = [l.evento, l.gt, l.cidade, l.codigo].filter(Boolean).join(' - ') || '(sem cabeçalho)';
+      const createdKey = 'c:' + l.id;
+      if(l.criadoPor && !notifSeenIds.has(createdKey)){
+        notifSeenIds.add(createdKey);
+        if(!silent){
+          novas.push({ id: uid(), tipo:'cadastro', mensagem: `Novo lançamento (${tipoLabel}): ${headerLine} — por ${l.criadoPor}`, quando: Date.now(), lida:false });
+        }
+      }
+      if(l.edited && l.editedAt){
+        const editKey = 'e:' + l.id + ':' + l.editedAt;
+        if(!notifSeenIds.has(editKey)){
+          notifSeenIds.add(editKey);
+          if(!silent){
+            novas.push({ id: uid(), tipo:'edicao', mensagem: `Lançamento editado (${tipoLabel}): ${headerLine} — por ${l.editadoPor || '-'}`, quando: Date.now(), lida:false });
+          }
+        }
+      }
+    });
+  }
+  processList(daily, 'Diário');
+  processList(evento, 'Evento/ Operação');
+
+  const conflitos = detectScheduleConflicts(daily.filter(l => !l.removed));
+  Object.entries(conflitos).forEach(([key, nome]) => {
+    const conflictKey = 'conf:' + hoje + ':' + key;
+    if(!notifSeenIds.has(conflictKey)){
+      notifSeenIds.add(conflictKey);
+      if(!silent){
+        novas.push({ id: uid(), tipo:'conflito', mensagem: `Conflito de horário: ${nome} está lançado(a) em mais de um serviço hoje`, quando: Date.now(), lida:false });
+      }
+    }
+  });
+
+  if(silent){
+    saveNotifState();
+    return;
+  }
+
+  if(novas.length > 0){
+    notifications = [...novas, ...notifications].slice(0, 50);
+    saveNotifState();
+    novas.forEach(n => showFloatingNotif(n));
+    if(currentTab === 'painel') renderPainel();
+  }
+}
+
+function showFloatingNotif(n){
+  const container = document.getElementById('floatingNotifs');
+  if(!container) return;
+  const s = notifStyle(n.tipo);
+  const el = document.createElement('div');
+  el.style.cssText = `background:${s.bg}; border:1px solid ${s.border}; color:${s.text}; border-radius:10px; padding:11px 13px; margin-bottom:8px; font-size:12.5px; font-family:'Inter',sans-serif; box-shadow:0 6px 18px rgba(0,0,0,0.45); cursor:pointer; pointer-events:auto; opacity:0; transform:translateY(-10px); transition:opacity 0.3s, transform 0.3s;`;
+  el.textContent = `${s.icon} ${n.mensagem}`;
+  el.onclick = () => { switchTab('notificacoes'); el.remove(); };
+  container.appendChild(el);
+  requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateY(0)'; });
+  setTimeout(() => {
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(-10px)';
+    setTimeout(() => el.remove(), 350);
+  }, 8000);
+}
+
+async function initNotifications(){
+  loadNotifState();
+  const jaInicializado = localStorage.getItem('efetivo_notif_initialized');
+  if(!jaInicializado){
+    await checkNotifications(true);
+    try{ localStorage.setItem('efetivo_notif_initialized', '1'); }catch(e){}
+  }
+  if(notifPollTimer) clearInterval(notifPollTimer);
+  notifPollTimer = setInterval(() => checkNotifications(false), 45000);
+}
+
+function renderNotificacoesView(){
+  notifications.forEach(n => { n.lida = true; });
+  saveNotifState();
+
+  const html = notifications.length === 0
+    ? `<div class="empty">Nenhuma notificação por enquanto.</div>`
+    : `
+      <button class="btn btn-ghost btn-block" style="margin-bottom:14px;" onclick="clearNotifications()">🗑️ Limpar notificações</button>
+      ${notifications.map(n => {
+        const s = notifStyle(n.tipo);
+        return `
+          <div style="background:${s.bg}; border:1px solid ${s.border}; color:${s.text}; border-radius:10px; padding:12px 14px; margin-bottom:10px; font-size:13px; font-family:'Inter',sans-serif;">
+            <div>${s.icon} ${n.mensagem}</div>
+            <div class="muted" style="margin-top:6px; font-size:11px;">${fmtWhen(n.quando)}</div>
+          </div>
+        `;
+      }).join('')}
+    `;
+  document.getElementById('viewNotificacoes').innerHTML = `
+    <div class="section-title">Notificações</div>
+    ${html}
+  `;
+}
+
+function clearNotifications(){
+  notifications = [];
+  saveNotifState();
+  renderNotificacoesView();
 }
 
 let currentConflictKeys = {};
@@ -802,6 +949,7 @@ function switchTab(t){
   document.getElementById('viewUsuarios').classList.toggle('hidden', t!=='usuarios');
   document.getElementById('viewAtivas').classList.toggle('hidden', t!=='ativas');
   document.getElementById('viewAuditoria').classList.toggle('hidden', t!=='auditoria');
+  document.getElementById('viewNotificacoes').classList.toggle('hidden', t!=='notificacoes');
   if(t==='painel') renderPainel();
   if(t==='day'){ activeBucketType='daily'; loadDateData(selectedDate).then(renderDayView); }
   if(t==='dayEvento'){ activeBucketType='evento'; renderEventoListView(); }
@@ -811,9 +959,11 @@ function switchTab(t){
   if(t==='usuarios') renderUsuariosView();
   if(t==='ativas') renderEquipesAtivasView();
   if(t==='auditoria') renderAuditoriaView();
+  if(t==='notificacoes') renderNotificacoesView();
 }
 
 function renderPainel(){
+  const naoLidas = unreadNotifCount();
   const items = [
     { t:'new', icon:'📋', label:'Lançamento diário', show:true },
     { t:'newEvento', icon:'🏁', label:'Lan. em Evento/ Operação', show:true },
@@ -822,13 +972,15 @@ function renderPainel(){
     { t:'quant', icon:'📊', label:'Quantitativo de Lançamentos', show:true },
     { t:'busca', icon:'🔎', label:'Buscar Policial', show:true },
     { t:'ativas', icon:'🟢', label:'Equipes Ativas', show:canToggleAtivo() },
+    { t:'notificacoes', icon:'🔔', label:'Notificações', show:true, badge:naoLidas },
     { t:'usuarios', icon:'👥', label:'Usuários', show:canManageUsers() },
     { t:'auditoria', icon:'🕵️', label:'Auditoria', show:isAdmin() },
   ];
   document.getElementById('viewPainel').innerHTML = `
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
       ${items.filter(i => i.show).map(i => `
-        <button onclick="switchTab('${i.t}')" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:20px 12px; display:flex; flex-direction:column; align-items:center; gap:8px; cursor:pointer;">
+        <button onclick="switchTab('${i.t}')" style="position:relative; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:20px 12px; display:flex; flex-direction:column; align-items:center; gap:8px; cursor:pointer;">
+          ${i.badge ? `<span style="position:absolute; top:8px; right:8px; background:var(--danger); color:#fff; font-family:'Inter',sans-serif; font-size:11px; font-weight:600; border-radius:10px; min-width:20px; height:20px; display:flex; align-items:center; justify-content:center; padding:0 5px;">${i.badge > 99 ? '99+' : i.badge}</span>` : ''}
           <span style="font-size:30px;">${i.icon}</span>
           <span style="color:var(--text); font-family:'Oswald',sans-serif; font-size:13px; text-align:center; line-height:1.25;">${i.label}</span>
         </button>
@@ -2633,6 +2785,7 @@ async function attemptLogin(){
 }
 
 function logout(){
+  if(notifPollTimer){ clearInterval(notifPollTimer); notifPollTimer = null; }
   auth.signOut();
 }
 
@@ -2715,6 +2868,7 @@ async function checkPermissionAndStart(user){
     currentUserLevel = snap.data().nivel || 'geral';
     document.getElementById('app').innerHTML = APP_SHELL_HTML;
     await loadAll();
+    initNotifications();
   }catch(e){
     document.getElementById('app').innerHTML = `<div style="padding:20px; color:var(--danger);">Erro ao verificar permissões: ${e.message}</div>`;
   }
