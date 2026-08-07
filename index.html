@@ -154,6 +154,7 @@ let linkButtonsConfig = {
   extras: [] // [{ id, enabled, scope: 'todos'|'motorizados', label, url }]
 };
 let configExtrasDraft = [];
+let userListViewConfig = { reduzido: false }; // admin libera (ou não) que Reduzido veja a lista completa de usuários
 let efetivoRowsEvento = [];
 let quantType = 'daily'; // 'daily' | 'evento'
 let quantDate = todayISO();
@@ -237,6 +238,7 @@ async function loadAll(){
   await loadActiveWindowHours();
   await loadWhatsappShareConfig();
   await loadLinkButtonsConfig();
+  await loadUserListViewConfig();
   renderHeader();
   resetNewForm();
   switchTab('painel');
@@ -315,6 +317,16 @@ async function loadLinkButtonsConfig(){
 }
 async function persistLinkButtonsConfig(){
   await saveKey('link-buttons-config', linkButtonsConfig);
+}
+
+async function loadUserListViewConfig(){
+  try{
+    const r = await storageGet('user-list-view-config');
+    userListViewConfig = (r && r.value) ? JSON.parse(r.value) : { reduzido: false };
+  }catch(e){ userListViewConfig = { reduzido: false }; }
+}
+async function persistUserListViewConfig(){
+  await saveKey('user-list-view-config', userListViewConfig);
 }
 
 async function persistEditLockHour(){
@@ -854,6 +866,11 @@ function openConfigModal(){
           <input type="checkbox" id="cfgWhatsappGeral" style="width:auto; margin:0;" ${whatsappShareConfig.geral ? 'checked' : ''} /> Permitir para nível Geral
         </label>
 
+        <label>Lista de usuários cadastrados</label>
+        <label style="display:flex; align-items:center; gap:8px; text-transform:none; letter-spacing:0; margin-bottom:16px;">
+          <input type="checkbox" id="cfgUserListReduzido" style="width:auto; margin:0;" ${userListViewConfig.reduzido ? 'checked' : ''} /> Permitir que nível Reduzido veja a lista completa de usuários
+        </label>
+
         <label>Botão GCOI</label>
         <label style="display:flex; align-items:center; gap:8px; text-transform:none; letter-spacing:0; margin-bottom:8px;">
           <input type="checkbox" id="cfgGcoiEnabled" style="width:auto; margin:0;" ${linkButtonsConfig.gcoi.enabled ? 'checked' : ''} /> Ativar botão GCOI
@@ -929,10 +946,14 @@ async function saveConfigModal(){
       .map(b => ({ ...b, label: (b.label || '').trim(), url: (b.url || '').trim() }))
       .filter(b => b.url)
   };
+  userListViewConfig = {
+    reduzido: document.getElementById('cfgUserListReduzido').checked
+  };
   await persistEditLockHour();
   await persistActiveWindowHours();
   await persistWhatsappShareConfig();
   await persistLinkButtonsConfig();
+  await persistUserListViewConfig();
   closeConfigModal();
   renderActiveListView();
 }
@@ -2052,6 +2073,7 @@ function renderUsuariosBody(filtro){
       </select>
       <button class="btn btn-accent btn-block" id="btnAddUsuario" style="margin-top:12px;" onclick="addUsuario()">Adicionar</button>
     </div>
+    ${canViewUserList() ? `
     <div class="card">
       <label>Buscar usuário cadastrado (nome ou e-mail)</label>
       <input type="text" id="filtroUsuarios" placeholder="Digite para buscar..." value="${filtro}" oninput="renderUsuariosBody(this.value)" style="margin-bottom:0;" />
@@ -2070,6 +2092,9 @@ function renderUsuariosBody(filtro){
           </div>
         </div>
       `).join('')}
+    ` : `
+    <div class="empty">A visualização da lista de usuários cadastrados está desativada para o seu nível. Peça a um administrador para liberar em Configurações.</div>
+    `}
   `;
   // preserva o foco no campo de busca após re-renderizar
   const filtroInput = document.getElementById('filtroUsuarios');
@@ -2952,6 +2977,7 @@ function canRemoveLaunch(){ return isAdmin() || isReduzido(); }
 function canEditComando(){ return isAdmin() || isReduzido(); }
 function canChangeLockHour(){ return isAdmin(); }
 function canManageUsers(){ return isAdmin() || isReduzido(); }
+function canViewUserList(){ return isAdmin() || (isReduzido() && !!userListViewConfig.reduzido); }
 function canToggleAtivo(){ return isAdmin() || isReduzido(); }
 function canShareWhatsApp(){
   if(isAdmin()) return true;
