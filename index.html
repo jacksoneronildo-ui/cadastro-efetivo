@@ -148,6 +148,12 @@ let vehicleIndex = []; // [{ placa, modelo, pat }] — diretório de viaturas j�
 let editLockHour = 8; // horário (0-23) do dia seguinte até quando um lançamento pode ser editado/removido
 let activeWindowHours = 6; // horas após o término previsto em que a equipe/posto ainda é considerada ativa por padrão
 let whatsappShareConfig = { reduzido: true, geral: false }; // quem pode compartilhar via WhatsApp, além do admin
+const GCOI_URL_DEFAULT = "https://docs.google.com/forms/d/e/1FAIpQLSfXmQPbDoVJhxaGKo3inLoycstG_EngRbPMDeEVW_bwZPtrFg/viewform";
+let linkButtonsConfig = {
+  gcoi: { enabled: true, scope: 'todos', label: 'CADASTRO GCOI', url: GCOI_URL_DEFAULT },
+  extras: [] // [{ id, enabled, scope: 'todos'|'motorizados', label, url }]
+};
+let configExtrasDraft = [];
 let efetivoRowsEvento = [];
 let quantType = 'daily'; // 'daily' | 'evento'
 let quantDate = todayISO();
@@ -230,6 +236,7 @@ async function loadAll(){
   await loadEditLockHour();
   await loadActiveWindowHours();
   await loadWhatsappShareConfig();
+  await loadLinkButtonsConfig();
   renderHeader();
   resetNewForm();
   switchTab('painel');
@@ -294,6 +301,22 @@ async function persistWhatsappShareConfig(){
   await saveKey('whatsapp-share-config', whatsappShareConfig);
 }
 
+async function loadLinkButtonsConfig(){
+  try{
+    const r = await storageGet('link-buttons-config');
+    const loaded = (r && r.value) ? JSON.parse(r.value) : null;
+    if(loaded){
+      linkButtonsConfig = {
+        gcoi: { ...linkButtonsConfig.gcoi, ...(loaded.gcoi || {}) },
+        extras: Array.isArray(loaded.extras) ? loaded.extras : []
+      };
+    }
+  }catch(e){}
+}
+async function persistLinkButtonsConfig(){
+  await saveKey('link-buttons-config', linkButtonsConfig);
+}
+
 async function persistEditLockHour(){
   await saveKey('edit-lock-hour', editLockHour);
 }
@@ -333,6 +356,12 @@ function isLaunchAtivoEfetivo(launch){
   if(launch.ativo === false) return false;
   if(launch.ativoForcado === true) return true;
   return isWithinActiveWindow(launch);
+}
+
+function isLaunchMotorizado(l){
+  const geral = l.viatura && (l.viatura.modelo || l.viatura.km || l.viatura.pat || l.viatura.placa);
+  const individual = (l.efetivo || []).some(p => p.viatura);
+  return !!(geral || individual);
 }
 
 function windowsOverlap(a, b){
@@ -824,10 +853,62 @@ function openConfigModal(){
         <label style="display:flex; align-items:center; gap:8px; text-transform:none; letter-spacing:0; margin-bottom:16px;">
           <input type="checkbox" id="cfgWhatsappGeral" style="width:auto; margin:0;" ${whatsappShareConfig.geral ? 'checked' : ''} /> Permitir para nível Geral
         </label>
+
+        <label>Botão GCOI</label>
+        <label style="display:flex; align-items:center; gap:8px; text-transform:none; letter-spacing:0; margin-bottom:8px;">
+          <input type="checkbox" id="cfgGcoiEnabled" style="width:auto; margin:0;" ${linkButtonsConfig.gcoi.enabled ? 'checked' : ''} /> Ativar botão GCOI
+        </label>
+        <select id="cfgGcoiScope" style="margin-bottom:8px;">
+          <option value="todos" ${linkButtonsConfig.gcoi.scope !== 'motorizados' ? 'selected' : ''}>Mostrar em todos os serviços</option>
+          <option value="motorizados" ${linkButtonsConfig.gcoi.scope === 'motorizados' ? 'selected' : ''}>Mostrar só em serviços motorizados</option>
+        </select>
+        <input id="cfgGcoiLabel" value="${linkButtonsConfig.gcoi.label || ''}" placeholder="Nome do botão" style="margin-bottom:8px;" />
+        <input id="cfgGcoiUrl" value="${linkButtonsConfig.gcoi.url || ''}" placeholder="Link do formulário GCOI" style="margin-bottom:16px;" />
+
+        <label>Outros botões de link</label>
+        <div id="configExtrasList"></div>
+        <button type="button" class="btn btn-ghost btn-block" style="margin-bottom:16px;" onclick="addConfigExtraBtn()">+ Adicionar botão</button>
+
         <button class="btn btn-accent btn-block" onclick="saveConfigModal()">Salvar</button>
       </div>
     </div>
   `;
+  configExtrasDraft = JSON.parse(JSON.stringify(linkButtonsConfig.extras || []));
+  renderConfigExtras();
+}
+
+function renderConfigExtras(){
+  const el = document.getElementById('configExtrasList');
+  if(!el) return;
+  el.innerHTML = configExtrasDraft.length ? configExtrasDraft.map(b => `
+    <div style="border:1px solid var(--border); border-radius:8px; padding:10px; margin-bottom:10px;">
+      <div class="flex-between" style="margin-bottom:8px;">
+        <label style="display:flex; align-items:center; gap:8px; text-transform:none; letter-spacing:0; margin-bottom:0;">
+          <input type="checkbox" style="width:auto; margin:0;" ${b.enabled ? 'checked' : ''} onchange="updateConfigExtra('${b.id}','enabled',this.checked)" /> Ativo
+        </label>
+        <button type="button" class="rm" onclick="removeConfigExtraBtn('${b.id}')">✕</button>
+      </div>
+      <select style="margin-bottom:8px;" onchange="updateConfigExtra('${b.id}','scope',this.value)">
+        <option value="todos" ${b.scope !== 'motorizados' ? 'selected' : ''}>Mostrar em todos os serviços</option>
+        <option value="motorizados" ${b.scope === 'motorizados' ? 'selected' : ''}>Mostrar só em serviços motorizados</option>
+      </select>
+      <input value="${b.label || ''}" placeholder="Nome do botão" style="margin-bottom:8px;" onchange="updateConfigExtra('${b.id}','label',this.value)" />
+      <input value="${b.url || ''}" placeholder="Link (https://...)" style="margin-bottom:0;" onchange="updateConfigExtra('${b.id}','url',this.value)" />
+    </div>
+  `).join('') : `<div class="muted" style="margin-bottom:12px;">Nenhum botão extra cadastrado.</div>`;
+}
+
+function addConfigExtraBtn(){
+  configExtrasDraft.push({ id: uid(), enabled: true, scope: 'todos', label: '', url: '' });
+  renderConfigExtras();
+}
+function removeConfigExtraBtn(id){
+  configExtrasDraft = configExtrasDraft.filter(b => b.id !== id);
+  renderConfigExtras();
+}
+function updateConfigExtra(id, field, value){
+  const b = configExtrasDraft.find(x => x.id === id);
+  if(b) b[field] = value;
 }
 function closeConfigModal(){ document.getElementById('modalRoot').innerHTML = ''; }
 async function saveConfigModal(){
@@ -837,9 +918,21 @@ async function saveConfigModal(){
     reduzido: document.getElementById('cfgWhatsappReduzido').checked,
     geral: document.getElementById('cfgWhatsappGeral').checked
   };
+  linkButtonsConfig = {
+    gcoi: {
+      enabled: document.getElementById('cfgGcoiEnabled').checked,
+      scope: document.getElementById('cfgGcoiScope').value,
+      label: document.getElementById('cfgGcoiLabel').value.trim() || 'CADASTRO GCOI',
+      url: document.getElementById('cfgGcoiUrl').value.trim() || GCOI_URL_DEFAULT
+    },
+    extras: configExtrasDraft
+      .map(b => ({ ...b, label: (b.label || '').trim(), url: (b.url || '').trim() }))
+      .filter(b => b.url)
+  };
   await persistEditLockHour();
   await persistActiveWindowHours();
   await persistWhatsappShareConfig();
+  await persistLinkButtonsConfig();
   closeConfigModal();
   renderActiveListView();
 }
@@ -2198,6 +2291,13 @@ function launchCard(l){
   const lockMsg = !editable
     ? `<span style="background:var(--surface2); border:1px solid var(--border); color:var(--muted); border-radius:20px; padding:6px 13px; font-size:11px; font-family:'Inter',sans-serif;">🔒 Prazo encerrado</span>`
     : '';
+  const motorizado = isLaunchMotorizado(l);
+  const gcoiCfg = linkButtonsConfig.gcoi;
+  const gcoiVisible = gcoiCfg.enabled && (gcoiCfg.scope !== 'motorizados' || motorizado);
+  const extraBtnsHtml = (linkButtonsConfig.extras || [])
+    .filter(b => b.enabled && b.url && (b.scope !== 'motorizados' || motorizado))
+    .map(b => `<button class="btn btn-accent" style="flex:1 1 120px;" onclick="openExtraLink('${b.id}')">🔗 ${b.label || 'Link'}</button>`)
+    .join('');
   return `
     <div class="card">
       <div class="flex-between">
@@ -2210,10 +2310,13 @@ function launchCard(l){
         ${lockMsg}
       </div>
       <div class="launch-preview">${preview}</div>
-      <div style="display:flex; gap:8px; margin-top:10px;">
-        <button class="btn btn-accent" style="flex:1;" onclick="openGcoi('${l.id}')">
-          📋 CADASTRO GCOI ${l.gcoi ? '(reabrir)' : ''}
+      <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
+        ${gcoiVisible ? `
+        <button class="btn btn-accent" style="flex:1 1 120px;" onclick="openGcoi('${l.id}')">
+          📋 ${gcoiCfg.label || 'CADASTRO GCOI'} ${l.gcoi ? '(reabrir)' : ''}
         </button>
+        ` : ''}
+        ${extraBtnsHtml}
         ${canShareWhatsApp() ? `
         <button onclick="shareWhatsApp('${l.id}')" aria-label="Compartilhar via WhatsApp" style="background:#25D366; border:none; border-radius:8px; width:48px; flex-shrink:0; display:flex; align-items:center; justify-content:center; cursor:pointer;">
           <svg viewBox="0 0 24 24" width="24" height="24" fill="#ffffff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12.002 2c-5.514 0-9.997 4.483-9.997 9.997 0 1.763.462 3.483 1.34 4.997L2 22l5.126-1.345a9.96 9.96 0 0 0 4.876 1.24h.004c5.514 0 9.997-4.483 9.997-9.998C21.999 6.483 17.516 2 12.002 2zm0 18.187h-.003a8.19 8.19 0 0 1-4.174-1.145l-.299-.178-3.104.815.828-3.026-.195-.31a8.17 8.17 0 0 1-1.256-4.35c0-4.522 3.68-8.202 8.207-8.202 2.191 0 4.251.854 5.8 2.404a8.146 8.146 0 0 1 2.404 5.802c0 4.523-3.68 8.19-8.208 8.19z"/></svg>
@@ -2223,8 +2326,6 @@ function launchCard(l){
     </div>
   `;
 }
-
-const GCOI_URL = "https://docs.google.com/forms/d/e/1FAIpQLSfXmQPbDoVJhxaGKo3inLoycstG_EngRbPMDeEVW_bwZPtrFg/viewform";
 
 function renderActiveListView(){
   if(activeBucketType === 'evento') renderEventoListBody();
@@ -2239,7 +2340,12 @@ async function openGcoi(id){
     await persistLaunches();
     renderActiveListView();
   }
-  window.open(GCOI_URL, '_blank');
+  window.open(linkButtonsConfig.gcoi.url || GCOI_URL_DEFAULT, '_blank');
+}
+
+function openExtraLink(id){
+  const b = (linkButtonsConfig.extras || []).find(x => x.id === id);
+  if(b && b.url) window.open(b.url, '_blank');
 }
 
 function shareWhatsApp(id){
