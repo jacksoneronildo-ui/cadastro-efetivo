@@ -408,6 +408,36 @@ function detectScheduleConflicts(list){
   return conflicts;
 }
 
+function detectVehicleScheduleConflicts(list){
+  // list: lançamentos não removidos e não desativados manualmente
+  const ativos = list.filter(l => isLaunchAtivoEfetivo(l));
+  const byPlaca = {};
+  ativos.forEach(l => {
+    const placas = new Set();
+    if(l.viatura && l.viatura.placa) placas.add(l.viatura.placa.trim().toUpperCase());
+    (l.efetivo || []).forEach(p => {
+      if(p.viatura && p.viatura.placa) placas.add(p.viatura.placa.trim().toUpperCase());
+    });
+    placas.forEach(placa => {
+      if(!placa) return;
+      if(!byPlaca[placa]) byPlaca[placa] = [];
+      byPlaca[placa].push({ l });
+    });
+  });
+  const conflicts = {}; // placa -> placa em conflito
+  Object.entries(byPlaca).forEach(([placa, entries]) => {
+    if(entries.length < 2) return;
+    for(let i = 0; i < entries.length; i++){
+      for(let j = i + 1; j < entries.length; j++){
+        if(windowsOverlap(entries[i].l, entries[j].l)){
+          conflicts[placa] = placa;
+        }
+      }
+    }
+  });
+  return conflicts;
+}
+
 // ---------- NOTIFICAÇÕES ----------
 let notifications = [];
 let notifSeenIds = new Set();
@@ -477,6 +507,17 @@ async function checkNotifications(silent){
       notifSeenIds.add(conflictKey);
       if(!silent){
         novas.push({ id: uid(), tipo:'conflito', mensagem: `Conflito de horário: ${nome} está lançado(a) em mais de um serviço hoje`, quando: Date.now(), lida:false });
+      }
+    }
+  });
+
+  const conflitosViatura = detectVehicleScheduleConflicts(daily.filter(l => !l.removed));
+  Object.entries(conflitosViatura).forEach(([placa]) => {
+    const conflictKey = 'confv:' + hoje + ':' + placa;
+    if(!notifSeenIds.has(conflictKey)){
+      notifSeenIds.add(conflictKey);
+      if(!silent){
+        novas.push({ id: uid(), tipo:'conflito', mensagem: `Conflito de horário: viatura placa ${placa} está lançada em mais de um serviço hoje`, quando: Date.now(), lida:false });
       }
     }
   });
@@ -553,6 +594,7 @@ function clearNotifications(){
 }
 
 let currentConflictKeys = {};
+let currentVehicleConflictKeys = {};
 
 async function toggleAtivo(id){
   if(!canToggleAtivo()){
@@ -1669,6 +1711,8 @@ function renderDayView(){
   const dc = dailyCommandCurrent || {};
   currentConflictKeys = detectScheduleConflicts(dayLaunches);
   const nomesConflito = [...new Set(Object.values(currentConflictKeys))];
+  currentVehicleConflictKeys = detectVehicleScheduleConflicts(dayLaunches);
+  const placasConflito = [...new Set(Object.values(currentVehicleConflictKeys))];
   const html = `
     <div class="card">
       <label>Data para consulta / relatório</label>
@@ -1684,6 +1728,12 @@ function renderDayView(){
     ${nomesConflito.length > 0 ? `
       <div style="background:#3A2418; border:1px solid var(--danger); color:#F2B8A9; font-size:13px; border-radius:8px; padding:10px 12px; margin-bottom:14px;">
         ⚠️ <b>Conflito de horário detectado:</b> ${nomesConflito.join(', ')} — ${nomesConflito.length === 1 ? 'está' : 'estão'} lançado(a/os) em mais de um serviço com horários que se cruzam. Verifique os cadastros destacados abaixo.
+      </div>
+    ` : ''}
+
+    ${placasConflito.length > 0 ? `
+      <div style="background:#3A2418; border:1px solid var(--danger); color:#F2B8A9; font-size:13px; border-radius:8px; padding:10px 12px; margin-bottom:14px;">
+        ⚠️ <b>Conflito de horário de viatura detectado:</b> placa${placasConflito.length === 1 ? '' : 's'} ${placasConflito.join(', ')} — lançada${placasConflito.length === 1 ? '' : 's'} em mais de um serviço com horários que se cruzam. Verifique os cadastros destacados abaixo.
       </div>
     ` : ''}
 
@@ -1720,6 +1770,7 @@ function sortGroupedByEvento(list){
 
 function renderEventoListBody(){
   currentConflictKeys = {};
+  currentVehicleConflictKeys = {};
   const allLaunches = sortGroupedByEvento(launches);
   const visibleLaunches = allLaunches.filter(l => !l.removed);
 
@@ -2232,6 +2283,7 @@ async function runBusca(){
   }
 
   currentConflictKeys = {};
+  currentVehicleConflictKeys = {};
   found.sort((a, b) => b.launch.createdAt - a.launch.createdAt);
 
   resEl.innerHTML = `
@@ -2288,18 +2340,27 @@ async function changeDate(v){
 
 function launchCard(l){
   const armadoTxt = (v) => v.armadoCartao ? ` · Armado c/ cartão: ${v.armadoCartao === 'sim' ? 'Sim' : 'Não'}` : '';
+  const placaEmConflito = (placa) => !!currentVehicleConflictKeys[(placa || '').trim().toUpperCase()];
   const efetivoTxt = l.efetivo.map(p => {
     const key = ((p.re || '').trim() || (p.nome || '').trim().toLowerCase());
     const emConflito = !!currentConflictKeys[key];
     const nomeHtml = emConflito
       ? `<span style="background:var(--danger); color:#fff; padding:1px 6px; border-radius:4px;">⚠️ ${p.nome}</span>`
       : p.nome;
-    return `${p.sexo==='F'?'👮🏻‍♀️':'👮🏻‍♂️'} ${p.patente} ${p.re} ${nomeHtml}${p.motorista ? ' 🚗 (motorista)' : ''}${p.tel ? '\n Tel. ' + p.tel : ''}${p.viatura ? `\n🏍️ Viatura: ${p.viatura.modelo || '-'} · KM ${p.viatura.km || '-'} · PAT ${p.viatura.pat || '-'} · Placa ${p.viatura.placa || '-'}${armadoTxt(p.viatura)}` : ''}${p.observacao ? `\n📝 ${p.observacao}` : ''}`;
+    const viaturaHtml = p.viatura
+      ? (placaEmConflito(p.viatura.placa)
+          ? `\n🏍️ Viatura: <span style="background:var(--danger); color:#fff; padding:1px 6px; border-radius:4px;">⚠️ ${p.viatura.modelo || '-'} · KM ${p.viatura.km || '-'} · PAT ${p.viatura.pat || '-'} · Placa ${p.viatura.placa || '-'}${armadoTxt(p.viatura)}</span>`
+          : `\n🏍️ Viatura: ${p.viatura.modelo || '-'} · KM ${p.viatura.km || '-'} · PAT ${p.viatura.pat || '-'} · Placa ${p.viatura.placa || '-'}${armadoTxt(p.viatura)}`)
+      : '';
+    return `${p.sexo==='F'?'👮🏻‍♀️':'👮🏻‍♂️'} ${p.patente} ${p.re} ${nomeHtml}${p.motorista ? ' 🚗 (motorista)' : ''}${p.tel ? '\n Tel. ' + p.tel : ''}${viaturaHtml}${p.observacao ? `\n📝 ${p.observacao}` : ''}`;
   }).join('\n\n');
   const headerLine = [l.evento, l.gt, l.cidade, l.codigo].filter(Boolean).join(' - ');
   const hasViaturaGeral = l.viatura.modelo || l.viatura.km || l.viatura.pat || l.viatura.placa;
+  const viaturaGeralEmConflito = hasViaturaGeral && placaEmConflito(l.viatura.placa);
   const viaturaTxt = hasViaturaGeral
-    ? `\n\nVIATURA: ${l.viatura.modelo || '-'}\nKM: ${l.viatura.km || '-'}\nPAT: ${l.viatura.pat || '-'}\nPLACA: ${l.viatura.placa || '-'}${l.viatura.armadoCartao ? `\nArmado com o cartão: ${l.viatura.armadoCartao === 'sim' ? 'Sim' : 'Não'}` : ''}`
+    ? (viaturaGeralEmConflito
+        ? `\n\n<span style="background:var(--danger); color:#fff; padding:1px 6px; border-radius:4px;">⚠️ VIATURA: ${l.viatura.modelo || '-'}\nKM: ${l.viatura.km || '-'}\nPAT: ${l.viatura.pat || '-'}\nPLACA: ${l.viatura.placa || '-'}${l.viatura.armadoCartao ? `\nArmado com o cartão: ${l.viatura.armadoCartao === 'sim' ? 'Sim' : 'Não'}` : ''}</span>`
+        : `\n\nVIATURA: ${l.viatura.modelo || '-'}\nKM: ${l.viatura.km || '-'}\nPAT: ${l.viatura.pat || '-'}\nPLACA: ${l.viatura.placa || '-'}${l.viatura.armadoCartao ? `\nArmado com o cartão: ${l.viatura.armadoCartao === 'sim' ? 'Sim' : 'Não'}` : ''}`)
     : '';
   const preview = `${headerLine}\n\n📆 Data: ${fmtDatePT(l.date)}\n⏰ Horário: ${l.inicio} às ${l.fim}\n\nEFETIVO:\n\n${efetivoTxt}${viaturaTxt}`;
   const editable = isLaunchEditable(l);
