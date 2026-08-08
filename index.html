@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>CADASTRO DE EFETIVO - 9ª CIPM</title>
-<meta name="app-version" content="2026-08-08.2" />
+<meta name="app-version" content="2026-08-08.3" />
 
 <link rel="manifest" href="manifest.json" />
 <meta name="theme-color" content="#12161B" />
@@ -75,6 +75,11 @@
   #backBar.hidden{display:none;}
   .flex-between{display:flex; justify-content:space-between; align-items:center;}
   .badge{font-size:10.5px; padding:2px 8px; border-radius:10px; font-family:'Inter',sans-serif;}
+  .uc-input, .uc-input::placeholder,
+  #fGt, #fCidade, #fCodigo, #vModelo, #vPat, #vPlaca,
+  #opEvento, #opGt, #opCidade, #opCodigo, #opvModelo, #opvPat, #opvPlaca,
+  #eEvento, #eGt, #eCidade, #eCodigo, #evModelo, #evPat, #evPlaca,
+  #dcComando, #dcSubcomando { text-transform: uppercase; }
 </style>
 </head>
 <body>
@@ -134,6 +139,7 @@ function fmtWhen(ts){
   return `${fmtDateBR(toLocalISODate(d))} às ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 }
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function up(v){ return v == null ? '' : String(v).toUpperCase(); }
 
 const MOTTO = "9ª CIPM: TRABALHO, FORÇA E DEDICAÇÃO";
 const OFICIAIS_PATENTES = ["CEL PM", "TEN CEL PM", "MAJ PM", "CAP PM", "1º TEN PM", "2º TEN PM", "ASP PM"];
@@ -647,7 +653,7 @@ async function renderEquipesAtivasView(){
     try{
       const r = await storageGet(launchesKey(d));
       const arr = (r && r.value) ? JSON.parse(r.value) : [];
-      arr.forEach(l => { if(!l.removed && isLaunchAtivoEfetivo(l)) itens.push({ date: d, launch: l }); });
+      arr.forEach(l => { if(!l.removed) itens.push({ date: d, launch: l }); });
     }catch(e){}
   }
   equipesAtivasCache = itens;
@@ -676,68 +682,81 @@ function toggleAllEquipesExpand(){
   renderEquipesAtivasBody();
 }
 
+function equipeCardHtml(date, l, ativo){
+  const key = equipeKey(date, l.id);
+  const expanded = equipesAtivasExpanded.has(key);
+  const w = computeServiceWindow(l);
+  const atrasada = ativo && new Date() > w.activeUntil;
+  const headerLine = [l.evento, l.gt, l.cidade, l.codigo].filter(Boolean).join(' - ');
+  const statusBtn = canToggleAtivo()
+    ? (ativo
+        ? `<button class="btn btn-block" style="margin-top:10px; background:#1f3d2e; border:1px solid #2f5c44; color:#7fd99a;" onclick="toggleAtivoEquipes('${date}','${l.id}',false)">
+            🟢 Ativa — toque para encerrar
+          </button>`
+        : `<button class="btn btn-block" style="margin-top:10px; background:#3A2418; border:1px solid var(--danger); color:#F2B8A9;" onclick="toggleAtivoEquipes('${date}','${l.id}',true)">
+            ⚫ Encerrada — toque para reabrir
+          </button>`)
+    : (ativo
+        ? `<div class="btn btn-block" style="margin-top:10px; background:#1f3d2e; border:1px solid #2f5c44; color:#7fd99a; text-align:center; cursor:default;">🟢 Ativa</div>`
+        : `<div class="btn btn-block" style="margin-top:10px; background:#3A2418; border:1px solid var(--danger); color:#F2B8A9; text-align:center; cursor:default;">⚫ Encerrada</div>`);
+  return `
+    <div class="card">
+      <div class="muted">${fmtDateBR(date)} · ${l.inicio}–${l.fim}${atrasada ? ' · <span style="color:var(--danger);">⏰ passou da janela prevista</span>' : ''}</div>
+      <div style="color:var(--text); font-family:'Inter',sans-serif; font-size:14px; font-weight:500; margin-top:4px;">${headerLine || '(sem cabeçalho)'}</div>
+      <div class="muted" style="margin-top:4px;">${l.efetivo.length} policial(is)${l.viatura && l.viatura.placa ? ' · Viatura: ' + l.viatura.placa : ''}</div>
+      <button class="btn btn-ghost btn-block" style="margin-top:10px;" onclick="toggleEquipeExpand('${date}','${l.id}')">
+        ${expanded ? '▲ Recolher detalhes' : '▼ Expandir detalhes'}
+      </button>
+      ${expanded ? `<div class="launch-preview">${buildLaunchPreview(l)}</div>` : ''}
+      ${statusBtn}
+    </div>
+  `;
+}
+
 function renderEquipesAtivasBody(){
-  const itens = [...equipesAtivasCache].sort((a, b) => a.launch.createdAt - b.launch.createdAt);
-  const allKeys = itens.map(({ date, launch }) => equipeKey(date, launch.id));
+  const todos = [...equipesAtivasCache].sort((a, b) => a.launch.createdAt - b.launch.createdAt);
+  const ativos = todos.filter(({ launch }) => isLaunchAtivoEfetivo(launch));
+  const desativados = todos.filter(({ launch }) => !isLaunchAtivoEfetivo(launch));
+  const allKeys = todos.map(({ date, launch }) => equipeKey(date, launch.id));
   const allExpanded = allKeys.length > 0 && allKeys.every(k => equipesAtivasExpanded.has(k));
 
-  const html = itens.length === 0
+  const ativosHtml = ativos.length === 0
     ? `<div class="empty">Nenhuma equipe/posto ativo no momento.</div>`
-    : itens.map(({ date, launch: l }) => {
-        const key = equipeKey(date, l.id);
-        const expanded = equipesAtivasExpanded.has(key);
-        const w = computeServiceWindow(l);
-        const atrasada = new Date() > w.activeUntil;
-        const headerLine = [l.evento, l.gt, l.cidade, l.codigo].filter(Boolean).join(' - ');
-        const statusBtn = canToggleAtivo()
-          ? `<button class="btn btn-block" style="margin-top:10px; background:#1f3d2e; border:1px solid #2f5c44; color:#7fd99a;" onclick="toggleAtivoEquipes('${date}','${l.id}')">
-              🟢 Ativa — toque para encerrar
-            </button>`
-          : `<div class="btn btn-block" style="margin-top:10px; background:#1f3d2e; border:1px solid #2f5c44; color:#7fd99a; text-align:center; cursor:default;">
-              🟢 Ativa
-            </div>`;
-        return `
-          <div class="card">
-            <div class="muted">${fmtDateBR(date)} · ${l.inicio}–${l.fim}${atrasada ? ' · <span style="color:var(--danger);">⏰ passou da janela prevista</span>' : ''}</div>
-            <div style="color:var(--text); font-family:'Inter',sans-serif; font-size:14px; font-weight:500; margin-top:4px;">${headerLine || '(sem cabeçalho)'}</div>
-            <div class="muted" style="margin-top:4px;">${l.efetivo.length} policial(is)${l.viatura && l.viatura.placa ? ' · Viatura: ' + l.viatura.placa : ''}</div>
-            <button class="btn btn-ghost btn-block" style="margin-top:10px;" onclick="toggleEquipeExpand('${date}','${l.id}')">
-              ${expanded ? '▲ Recolher detalhes' : '▼ Expandir detalhes'}
-            </button>
-            ${expanded ? `<div class="launch-preview">${buildLaunchPreview(l)}</div>` : ''}
-            ${statusBtn}
-          </div>
-        `;
-      }).join('');
+    : ativos.map(({ date, launch: l }) => equipeCardHtml(date, l, true)).join('');
+
+  const desativadosHtml = desativados.length === 0
+    ? `<div class="empty">Nenhuma equipe/posto desativado nas últimas 48h.</div>`
+    : desativados.map(({ date, launch: l }) => equipeCardHtml(date, l, false)).join('');
 
   document.getElementById('viewAtivas').innerHTML = `
-    <div class="section-title">Equipes/ Postos possivelmente ativos (hoje e ontem)</div>
-    ${itens.length > 0 ? `
+    ${todos.length > 0 ? `
       <button class="btn btn-ghost btn-block" style="margin-bottom:14px;" onclick="toggleAllEquipesExpand()">
         ${allExpanded ? '▲ Recolher todos' : '▼ Expandir todos'}
       </button>
     ` : ''}
-    ${html}
+    <div class="section-title">🟢 Equipes/ Postos ativos (hoje e ontem)</div>
+    ${ativosHtml}
+    <div class="section-title" style="margin-top:20px;">⚫ Equipes/ Postos desativados (hoje e ontem)</div>
+    ${desativadosHtml}
   `;
 }
 
-async function toggleAtivoEquipes(date, id){
+async function toggleAtivoEquipes(date, id, reabrir){
   if(!canToggleAtivo()) return;
   try{
     const r = await storageGet(launchesKey(date));
     const arr = (r && r.value) ? JSON.parse(r.value) : [];
     const l = arr.find(x => x.id === id);
     if(!l) return;
-    l.ativo = false;
-    l.ativoForcado = false;
+    l.ativo = !!reabrir;
+    l.ativoForcado = !!reabrir;
     l.ativoAlteradoPor = currentUserEmail;
-  l.ativoAlteradoEm = Date.now();
+    l.ativoAlteradoEm = Date.now();
     await saveKey(launchesKey(date), arr);
     if(activeBucketType === 'daily' && selectedDate === date){
       launches = arr;
     }
-    equipesAtivasCache = equipesAtivasCache.filter(it => !(it.date === date && it.launch.id === id));
-    renderEquipesAtivasBody();
+    await renderEquipesAtivasView();
   }catch(e){
     alert('Erro ao atualizar status: ' + e.message);
   }
@@ -1251,7 +1270,7 @@ const TAB_LABELS = {
   dayEvento: 'Relatório de Evento/ Operação',
   quant: 'Quantitativo de Lançamentos',
   busca: 'Buscar Policial',
-  ativas: 'Equipes Ativas',
+  ativas: 'Equipes Ativas/Desativadas',
   notificacoes: 'Notificações',
   usuarios: 'Usuários',
   auditoria: 'Auditoria'
@@ -1388,7 +1407,7 @@ function renderEfetivoRows(){
       <div class="row">
         <div>
           <label>Nome</label>
-          <input list="policiaisConhecidos" value="${r.nome}" placeholder="Ex: ERONILDO" onchange="onNomeChangeNew('${r.id}',this.value)" />
+          <input class="uc-input" list="policiaisConhecidos" value="${r.nome}" placeholder="Ex: ERONILDO" onchange="onNomeChangeNew('${r.id}',this.value)" />
         </div>
         <div>
           <label>Sexo</label>
@@ -1399,8 +1418,8 @@ function renderEfetivoRows(){
         </div>
       </div>
       <div class="row">
-        <div><label>Matrícula</label><input value="${r.re}" placeholder="Ex: 1064720" onchange="updateRow('${r.id}','re',this.value)" /></div>
-        <div><label>Posto/ Graduação</label><input list="patentes" value="${r.patente}" placeholder="Ex: 2º SGT PM" onchange="updateRow('${r.id}','patente',this.value)" /></div>
+        <div><label>Matrícula</label><input class="uc-input" value="${r.re}" placeholder="Ex: 1064720" onchange="updateRow('${r.id}','re',this.value)" /></div>
+        <div><label>Posto/ Graduação</label><input class="uc-input" list="patentes" value="${r.patente}" placeholder="Ex: 2º SGT PM" onchange="updateRow('${r.id}','patente',this.value)" /></div>
       </div>
       <label>Telefone</label>
       <input value="${r.tel}" placeholder="Ex: 87 98123-4871" onchange="updateRow('${r.id}','tel',this.value)" style="margin-bottom:0;" />
@@ -1413,12 +1432,12 @@ function renderEfetivoRows(){
       ${r.viatura ? `
         <div style="margin-top:10px;">
           <label>Placa</label>
-          <input list="placasConhecidas" value="${r.viatura.placa || ''}" onchange="onPlacaChangeIndividual('${r.id}',this.value,'updateRowViatura')" />
+          <input class="uc-input" list="placasConhecidas" value="${r.viatura.placa || ''}" onchange="onPlacaChangeIndividual('${r.id}',this.value,'updateRowViatura')" />
           <label>Modelo</label>
-          <input value="${r.viatura.modelo || ''}" placeholder="Ex: CG 160" onchange="updateRowViatura('${r.id}','modelo',this.value)" />
+          <input class="uc-input" value="${r.viatura.modelo || ''}" placeholder="Ex: CG 160" onchange="updateRowViatura('${r.id}','modelo',this.value)" />
           <div class="row">
             <div><label>KM</label><input value="${r.viatura.km || ''}" onchange="updateRowViatura('${r.id}','km',this.value)" /></div>
-            <div><label>PATRIMÔNIO</label><input value="${r.viatura.pat || ''}" onchange="updateRowViatura('${r.id}','pat',this.value)" /></div>
+            <div><label>PATRIMÔNIO</label><input class="uc-input" value="${r.viatura.pat || ''}" onchange="updateRowViatura('${r.id}','pat',this.value)" /></div>
           </div>
           <label>Armado com o cartão?</label>
           <div style="display:flex; gap:16px; margin-bottom:0;">
@@ -1432,7 +1451,7 @@ function renderEfetivoRows(){
         </div>
       ` : ''}
       <label style="margin-top:10px;">Observação</label>
-      <textarea placeholder="Substituindo o Sd PM XXXXX (01234568)" onchange="updateRow('${r.id}','observacao',this.value)" style="min-height:50px; margin-bottom:0;">${r.observacao || ''}</textarea>
+      <textarea class="uc-input" placeholder="Substituindo o Sd PM XXXXX (01234568)" onchange="updateRow('${r.id}','observacao',this.value)" style="min-height:50px; margin-bottom:0;">${r.observacao || ''}</textarea>
     </div>
   `).join('') + `
     <datalist id="patentes">
@@ -1461,12 +1480,12 @@ function renderEfetivoRows(){
 
 function updateRow(id, field, value){
   const r = efetivoRows.find(x => x.id === id);
-  if(r) r[field] = value;
+  if(r) r[field] = field === 'tel' ? value : up(value);
 }
 function onNomeChangeNew(id, value){
   const r = efetivoRows.find(x => x.id === id);
   if(!r) return;
-  r.nome = value;
+  r.nome = up(value);
   const match = findOfficerByName(value);
   if(match){
     if(!r.patente) r.patente = match.patente || '';
@@ -1487,7 +1506,7 @@ function toggleRowViatura(id){
 }
 function updateRowViatura(id, field, value){
   const r = efetivoRows.find(x => x.id === id);
-  if(r && r.viatura) r.viatura[field] = value;
+  if(r && r.viatura) r.viatura[field] = (field === 'km' || field === 'armadoCartao') ? value : up(value);
 }
 function addEfetivoRow(){
   efetivoRows.push({id:uid(), patente:"", re:"", nome:"", tel:"", sexo:"M", motorista:false, viatura:null, observacao:""});
@@ -1514,17 +1533,17 @@ function setBtnSaving(id, saving){
 }
 
 async function saveLaunch(){
-  const gt = document.getElementById('fGt').value.trim();
-  const cidade = document.getElementById('fCidade').value.trim();
-  const codigo = document.getElementById('fCodigo').value.trim();
+  const gt = up(document.getElementById('fGt').value.trim());
+  const cidade = up(document.getElementById('fCidade').value.trim());
+  const codigo = up(document.getElementById('fCodigo').value.trim());
   const data = document.getElementById('fData').value || todayISO();
   const inicio = document.getElementById('fInicio').value;
   const fim = document.getElementById('fFim').value;
   const viatura = {
-    modelo: document.getElementById('vModelo').value.trim(),
+    modelo: up(document.getElementById('vModelo').value.trim()),
     km: document.getElementById('vKm').value.trim(),
-    pat: document.getElementById('vPat').value.trim(),
-    placa: document.getElementById('vPlaca').value.trim(),
+    pat: up(document.getElementById('vPat').value.trim()),
+    placa: up(document.getElementById('vPlaca').value.trim()),
     armadoCartao: (document.querySelector('input[name="vArmado"]:checked') || {}).value || ''
   };
   const efetivo = efetivoRows.filter(r => r.nome.trim() !== "");
@@ -1641,7 +1660,7 @@ function renderEfetivoRowsEvento(){
       <div class="row">
         <div>
           <label>Nome</label>
-          <input list="policiaisConhecidos" value="${r.nome}" placeholder="Ex: ERONILDO" onchange="onNomeChangeEvento('${r.id}',this.value)" />
+          <input class="uc-input" list="policiaisConhecidos" value="${r.nome}" placeholder="Ex: ERONILDO" onchange="onNomeChangeEvento('${r.id}',this.value)" />
         </div>
         <div>
           <label>Sexo</label>
@@ -1652,8 +1671,8 @@ function renderEfetivoRowsEvento(){
         </div>
       </div>
       <div class="row">
-        <div><label>Matrícula</label><input value="${r.re}" placeholder="Ex: 1064720" onchange="updateRowEvento('${r.id}','re',this.value)" /></div>
-        <div><label>Posto/ Graduação</label><input list="patentes" value="${r.patente}" placeholder="Ex: 2º SGT PM" onchange="updateRowEvento('${r.id}','patente',this.value)" /></div>
+        <div><label>Matrícula</label><input class="uc-input" value="${r.re}" placeholder="Ex: 1064720" onchange="updateRowEvento('${r.id}','re',this.value)" /></div>
+        <div><label>Posto/ Graduação</label><input class="uc-input" list="patentes" value="${r.patente}" placeholder="Ex: 2º SGT PM" onchange="updateRowEvento('${r.id}','patente',this.value)" /></div>
       </div>
       <label>Telefone</label>
       <input value="${r.tel}" placeholder="Ex: 87 98123-4871" onchange="updateRowEvento('${r.id}','tel',this.value)" style="margin-bottom:0;" />
@@ -1666,12 +1685,12 @@ function renderEfetivoRowsEvento(){
       ${r.viatura ? `
         <div style="margin-top:10px;">
           <label>Placa</label>
-          <input list="placasConhecidas" value="${r.viatura.placa || ''}" onchange="onPlacaChangeIndividual('${r.id}',this.value,'updateRowViaturaEventoNew')" />
+          <input class="uc-input" list="placasConhecidas" value="${r.viatura.placa || ''}" onchange="onPlacaChangeIndividual('${r.id}',this.value,'updateRowViaturaEventoNew')" />
           <label>Modelo</label>
-          <input value="${r.viatura.modelo || ''}" placeholder="Ex: CG 160" onchange="updateRowViaturaEventoNew('${r.id}','modelo',this.value)" />
+          <input class="uc-input" value="${r.viatura.modelo || ''}" placeholder="Ex: CG 160" onchange="updateRowViaturaEventoNew('${r.id}','modelo',this.value)" />
           <div class="row">
             <div><label>KM</label><input value="${r.viatura.km || ''}" onchange="updateRowViaturaEventoNew('${r.id}','km',this.value)" /></div>
-            <div><label>PATRIMÔNIO</label><input value="${r.viatura.pat || ''}" onchange="updateRowViaturaEventoNew('${r.id}','pat',this.value)" /></div>
+            <div><label>PATRIMÔNIO</label><input class="uc-input" value="${r.viatura.pat || ''}" onchange="updateRowViaturaEventoNew('${r.id}','pat',this.value)" /></div>
           </div>
           <label>Armado com o cartão?</label>
           <div style="display:flex; gap:16px; margin-bottom:0;">
@@ -1685,19 +1704,19 @@ function renderEfetivoRowsEvento(){
         </div>
       ` : ''}
       <label style="margin-top:10px;">Observação</label>
-      <textarea placeholder="Substituindo o Sd PM XXXXX (01234568)" onchange="updateRowEvento('${r.id}','observacao',this.value)" style="min-height:50px; margin-bottom:0;">${r.observacao || ''}</textarea>
+      <textarea class="uc-input" placeholder="Substituindo o Sd PM XXXXX (01234568)" onchange="updateRowEvento('${r.id}','observacao',this.value)" style="min-height:50px; margin-bottom:0;">${r.observacao || ''}</textarea>
     </div>
   `).join('');
 }
 
 function updateRowEvento(id, field, value){
   const r = efetivoRowsEvento.find(x => x.id === id);
-  if(r) r[field] = value;
+  if(r) r[field] = field === 'tel' ? value : up(value);
 }
 function onNomeChangeEvento(id, value){
   const r = efetivoRowsEvento.find(x => x.id === id);
   if(!r) return;
-  r.nome = value;
+  r.nome = up(value);
   const match = findOfficerByName(value);
   if(match){
     if(!r.patente) r.patente = match.patente || '';
@@ -1718,7 +1737,7 @@ function toggleRowViaturaEventoNew(id){
 }
 function updateRowViaturaEventoNew(id, field, value){
   const r = efetivoRowsEvento.find(x => x.id === id);
-  if(r && r.viatura) r.viatura[field] = value;
+  if(r && r.viatura) r.viatura[field] = (field === 'km' || field === 'armadoCartao') ? value : up(value);
 }
 function addEfetivoRowEvento(){
   efetivoRowsEvento.push({id:uid(), patente:"", re:"", nome:"", tel:"", sexo:"M", motorista:false, viatura:null, observacao:""});
@@ -1730,22 +1749,22 @@ function removeEfetivoRowEvento(id){
 }
 
 async function saveLaunchEvento(){
-  const evento = document.getElementById('opEvento').value.trim();
+  const evento = up(document.getElementById('opEvento').value.trim());
   if(!evento){
     alert("Informe o nome do Evento/Operação.");
     return;
   }
-  const gt = document.getElementById('opGt').value.trim();
-  const cidade = document.getElementById('opCidade').value.trim();
-  const codigo = document.getElementById('opCodigo').value.trim();
+  const gt = up(document.getElementById('opGt').value.trim());
+  const cidade = up(document.getElementById('opCidade').value.trim());
+  const codigo = up(document.getElementById('opCodigo').value.trim());
   const data = document.getElementById('opData').value || todayISO();
   const inicio = document.getElementById('opInicio').value;
   const fim = document.getElementById('opFim').value;
   const viatura = {
-    modelo: document.getElementById('opvModelo').value.trim(),
+    modelo: up(document.getElementById('opvModelo').value.trim()),
     km: document.getElementById('opvKm').value.trim(),
-    pat: document.getElementById('opvPat').value.trim(),
-    placa: document.getElementById('opvPlaca').value.trim(),
+    pat: up(document.getElementById('opvPat').value.trim()),
+    placa: up(document.getElementById('opvPlaca').value.trim()),
     armadoCartao: (document.querySelector('input[name="opvArmado"]:checked') || {}).value || ''
   };
   const efetivo = efetivoRowsEvento.filter(r => r.nome.trim() !== "");
@@ -2933,7 +2952,7 @@ function renderEfetivoRowsEdit(){
       <div class="row">
         <div>
           <label>Nome</label>
-          <input list="policiaisConhecidos" value="${r.nome}" onchange="onNomeChangeEdit('${r.id}',this.value)" />
+          <input class="uc-input" list="policiaisConhecidos" value="${r.nome}" onchange="onNomeChangeEdit('${r.id}',this.value)" />
         </div>
         <div>
           <label>Sexo</label>
@@ -2944,8 +2963,8 @@ function renderEfetivoRowsEdit(){
         </div>
       </div>
       <div class="row">
-        <div><label>Matrícula</label><input value="${r.re}" onchange="updateRowEdit('${r.id}','re',this.value)" /></div>
-        <div><label>Posto/ Graduação</label><input list="patentes" value="${r.patente}" onchange="updateRowEdit('${r.id}','patente',this.value)" /></div>
+        <div><label>Matrícula</label><input class="uc-input" value="${r.re}" onchange="updateRowEdit('${r.id}','re',this.value)" /></div>
+        <div><label>Posto/ Graduação</label><input class="uc-input" list="patentes" value="${r.patente}" onchange="updateRowEdit('${r.id}','patente',this.value)" /></div>
       </div>
       <label>Telefone</label>
       <input value="${r.tel}" onchange="updateRowEdit('${r.id}','tel',this.value)" style="margin-bottom:0;" />
@@ -2958,12 +2977,12 @@ function renderEfetivoRowsEdit(){
       ${r.viatura ? `
         <div style="margin-top:10px;">
           <label>Placa</label>
-          <input list="placasConhecidas" value="${r.viatura.placa || ''}" onchange="onPlacaChangeIndividual('${r.id}',this.value,'updateRowViaturaEdit')" />
+          <input class="uc-input" list="placasConhecidas" value="${r.viatura.placa || ''}" onchange="onPlacaChangeIndividual('${r.id}',this.value,'updateRowViaturaEdit')" />
           <label>Modelo</label>
-          <input value="${r.viatura.modelo || ''}" placeholder="Ex: CG 160" onchange="updateRowViaturaEdit('${r.id}','modelo',this.value)" />
+          <input class="uc-input" value="${r.viatura.modelo || ''}" placeholder="Ex: CG 160" onchange="updateRowViaturaEdit('${r.id}','modelo',this.value)" />
           <div class="row">
             <div><label>KM</label><input value="${r.viatura.km || ''}" onchange="updateRowViaturaEdit('${r.id}','km',this.value)" /></div>
-            <div><label>PATRIMÔNIO</label><input value="${r.viatura.pat || ''}" onchange="updateRowViaturaEdit('${r.id}','pat',this.value)" /></div>
+            <div><label>PATRIMÔNIO</label><input class="uc-input" value="${r.viatura.pat || ''}" onchange="updateRowViaturaEdit('${r.id}','pat',this.value)" /></div>
           </div>
           <label>Armado com o cartão?</label>
           <div style="display:flex; gap:16px; margin-bottom:0;">
@@ -2977,19 +2996,19 @@ function renderEfetivoRowsEdit(){
         </div>
       ` : ''}
       <label style="margin-top:10px;">Observação</label>
-      <textarea placeholder="Substituindo o Sd PM XXXXX (01234568)" onchange="updateRowEdit('${r.id}','observacao',this.value)" style="min-height:50px; margin-bottom:0;">${r.observacao || ''}</textarea>
+      <textarea class="uc-input" placeholder="Substituindo o Sd PM XXXXX (01234568)" onchange="updateRowEdit('${r.id}','observacao',this.value)" style="min-height:50px; margin-bottom:0;">${r.observacao || ''}</textarea>
     </div>
   `).join('');
 }
 
 function updateRowEdit(id, field, value){
   const r = efetivoRowsEdit.find(x => x.id === id);
-  if(r) r[field] = value;
+  if(r) r[field] = field === 'tel' ? value : up(value);
 }
 function onNomeChangeEdit(id, value){
   const r = efetivoRowsEdit.find(x => x.id === id);
   if(!r) return;
-  r.nome = value;
+  r.nome = up(value);
   const match = findOfficerByName(value);
   if(match){
     if(!r.patente) r.patente = match.patente || '';
@@ -3010,7 +3029,7 @@ function toggleRowViaturaEdit(id){
 }
 function updateRowViaturaEdit(id, field, value){
   const r = efetivoRowsEdit.find(x => x.id === id);
-  if(r && r.viatura) r.viatura[field] = value;
+  if(r && r.viatura) r.viatura[field] = (field === 'km' || field === 'armadoCartao') ? value : up(value);
 }
 function addEfetivoRowEdit(){
   efetivoRowsEdit.push({id:uid(), patente:"", re:"", nome:"", tel:"", sexo:"M", motorista:false, viatura:null, observacao:""});
@@ -3051,19 +3070,19 @@ async function saveEditLaunch(){
   setBtnSaving('btnSaveEdit', true);
 
   if(wasEvento){
-    l.evento = document.getElementById('eEvento').value.trim() || l.evento;
+    l.evento = up(document.getElementById('eEvento').value.trim()) || l.evento;
   }
-  l.gt = document.getElementById('eGt').value.trim();
-  l.cidade = document.getElementById('eCidade').value.trim();
-  l.codigo = document.getElementById('eCodigo').value.trim();
+  l.gt = up(document.getElementById('eGt').value.trim());
+  l.cidade = up(document.getElementById('eCidade').value.trim());
+  l.codigo = up(document.getElementById('eCodigo').value.trim());
   l.date = document.getElementById('eData').value || l.date;
   l.inicio = document.getElementById('eInicio').value;
   l.fim = document.getElementById('eFim').value;
   l.viatura = {
-    modelo: document.getElementById('evModelo').value.trim(),
+    modelo: up(document.getElementById('evModelo').value.trim()),
     km: document.getElementById('evKm').value.trim(),
-    pat: document.getElementById('evPat').value.trim(),
-    placa: document.getElementById('evPlaca').value.trim(),
+    pat: up(document.getElementById('evPat').value.trim()),
+    placa: up(document.getElementById('evPlaca').value.trim()),
     armadoCartao: (document.querySelector('input[name="evArmado"]:checked') || {}).value || ''
   };
   l.efetivo = efetivo;
@@ -3107,8 +3126,8 @@ async function saveEditLaunch(){
 async function saveDailyCommand(){
   if(!canEditComando()) return;
   dailyCommandCurrent = {
-    comando: document.getElementById('dcComando').value.trim(),
-    subcomando: document.getElementById('dcSubcomando').value.trim()
+    comando: up(document.getElementById('dcComando').value.trim()),
+    subcomando: up(document.getElementById('dcSubcomando').value.trim())
   };
   await persistDailyCommand();
 }
