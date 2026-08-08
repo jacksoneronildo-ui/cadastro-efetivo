@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>CADASTRO DE EFETIVO - 9ª CIPM</title>
-<meta name="app-version" content="2026-08-08.3" />
+<meta name="app-version" content="2026-08-08.4" />
 
 <link rel="manifest" href="manifest.json" />
 <meta name="theme-color" content="#12161B" />
@@ -164,6 +164,7 @@ let configExtrasDraft = [];
 let userListViewConfig = { reduzido: false }; // admin libera (ou não) que Reduzido veja a lista completa de usuários
 let reportsViewConfig = { geral: true }; // admin liga/desliga o acesso do nível Geral aos relatórios de serviços
 let equipesAtivasExpanded = new Set(); // chaves "data|id" dos cards expandidos na aba Equipes Ativas
+let equipesFiltro = { ativo: true, desativado: true }; // quais grupos mostrar na aba Equipes Ativas/Desativadas
 let efetivoRowsEvento = [];
 let quantType = 'daily'; // 'daily' | 'evento'
 let quantDate = todayISO();
@@ -713,6 +714,11 @@ function equipeCardHtml(date, l, ativo){
   `;
 }
 
+function setEquipesFiltro(tipo, checked){
+  equipesFiltro[tipo] = checked;
+  renderEquipesAtivasBody();
+}
+
 function renderEquipesAtivasBody(){
   const todos = [...equipesAtivasCache].sort((a, b) => a.launch.createdAt - b.launch.createdAt);
   const ativos = todos.filter(({ launch }) => isLaunchAtivoEfetivo(launch));
@@ -729,15 +735,28 @@ function renderEquipesAtivasBody(){
     : desativados.map(({ date, launch: l }) => equipeCardHtml(date, l, false)).join('');
 
   document.getElementById('viewAtivas').innerHTML = `
+    <div class="card">
+      <label style="display:flex; align-items:center; gap:8px; text-transform:none; letter-spacing:0; margin-bottom:8px;">
+        <input type="checkbox" style="width:auto; margin:0;" ${equipesFiltro.ativo ? 'checked' : ''} onchange="setEquipesFiltro('ativo', this.checked)" /> Serviço ativo
+      </label>
+      <label style="display:flex; align-items:center; gap:8px; text-transform:none; letter-spacing:0; margin-bottom:0;">
+        <input type="checkbox" style="width:auto; margin:0;" ${equipesFiltro.desativado ? 'checked' : ''} onchange="setEquipesFiltro('desativado', this.checked)" /> Serviço desativado
+      </label>
+    </div>
     ${todos.length > 0 ? `
       <button class="btn btn-ghost btn-block" style="margin-bottom:14px;" onclick="toggleAllEquipesExpand()">
         ${allExpanded ? '▲ Recolher todos' : '▼ Expandir todos'}
       </button>
     ` : ''}
-    <div class="section-title">🟢 Equipes/ Postos ativos (hoje e ontem)</div>
-    ${ativosHtml}
-    <div class="section-title" style="margin-top:20px;">⚫ Equipes/ Postos desativados (hoje e ontem)</div>
-    ${desativadosHtml}
+    ${equipesFiltro.ativo ? `
+      <div class="section-title">🟢 Equipes/ Postos ativos (hoje e ontem)</div>
+      ${ativosHtml}
+    ` : ''}
+    ${equipesFiltro.desativado ? `
+      <div class="section-title" style="margin-top:20px;">⚫ Equipes/ Postos desativados (hoje e ontem)</div>
+      ${desativadosHtml}
+    ` : ''}
+    ${!equipesFiltro.ativo && !equipesFiltro.desativado ? `<div class="empty">Marque ao menos um dos filtros acima para ver os cadastros.</div>` : ''}
   `;
 }
 
@@ -1929,6 +1948,57 @@ function computeQuantitativo(list){
   };
 }
 
+function computeQuantitativoSexo(list){
+  const counts = {}; // pat -> { M, F }
+  list.forEach(l => {
+    (l.efetivo || []).forEach(p => {
+      const pat = (p.patente || '').trim() || '(não informado)';
+      const sexo = p.sexo === 'F' ? 'F' : 'M';
+      if(!counts[pat]) counts[pat] = { M: 0, F: 0 };
+      counts[pat][sexo]++;
+    });
+  });
+  const entries = Object.entries(counts)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([pat, c]) => [pat, c.M, c.F, c.M + c.F]);
+  const totalM = entries.reduce((s, [, m]) => s + m, 0);
+  const totalF = entries.reduce((s, [, , f]) => s + f, 0);
+  return { entries, totalM, totalF, total: totalM + totalF };
+}
+
+function quantSexoCardHtml(title, q){
+  const rowsHtml = q.entries.length === 0
+    ? `<div class="empty">Nenhum efetivo lançado.</div>`
+    : q.entries.map(([pat, m, f, n]) => `
+        <div class="flex-between" style="margin-bottom:9px; font-family:'Inter',sans-serif; font-size:13px;">
+          <span style="color:var(--text);">${pat}</span>
+          <span style="font-family:'JetBrains Mono', monospace; font-size:12.5px;">
+            👮🏻‍♂️ <b style="color:var(--info);">${m}</b>&nbsp;&nbsp;👮🏻‍♀️ <b style="color:#e88bb0;">${f}</b>&nbsp;&nbsp;= <b style="color:var(--accent);">${n}</b>
+          </span>
+        </div>
+      `).join('');
+  return `
+    <div class="card">
+      <div class="section-title" style="margin-bottom:14px;">${title}</div>
+      ${rowsHtml}
+      <div style="display:flex; gap:8px; margin-top:12px;">
+        <div style="flex:1; background:var(--surface2); border-radius:10px; padding:12px 8px; text-align:center;">
+          <div style="font-family:'Oswald',sans-serif; font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Masculino</div>
+          <div style="font-family:'JetBrains Mono', monospace; font-size:21px; color:var(--info); margin-top:4px;">${q.totalM}</div>
+        </div>
+        <div style="flex:1; background:var(--surface2); border-radius:10px; padding:12px 8px; text-align:center;">
+          <div style="font-family:'Oswald',sans-serif; font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Feminino</div>
+          <div style="font-family:'JetBrains Mono', monospace; font-size:21px; color:#e88bb0; margin-top:4px;">${q.totalF}</div>
+        </div>
+        <div style="flex:1; background:linear-gradient(135deg, var(--accent), #c9821f); border-radius:10px; padding:12px 8px; text-align:center;">
+          <div style="font-family:'Oswald',sans-serif; font-size:10.5px; color:#181205; text-transform:uppercase; letter-spacing:0.5px; opacity:0.8;">Total</div>
+          <div style="font-family:'JetBrains Mono', monospace; font-size:21px; color:#181205; margin-top:4px; font-weight:700;">${q.total}</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function computeVeiculos(list){
   const carrosPlacas = new Set();
   const carrosPlacasAtivas = new Set();
@@ -2104,17 +2174,19 @@ async function renderQuantView(){
     });
     const groupNames = Object.keys(groups).sort((a, b) => a.localeCompare(b));
     if(groupNames.length === 0){
-      bodyHtml = quantCardHtml('Por posto/ graduação', computeQuantitativo([])) + veiculosCardHtml('Viaturas utilizadas', computeVeiculos([])) + equipesPostosCardHtml('Equipes e Postos de serviço', computeEquipesPostos([]));
+      bodyHtml = quantCardHtml('Por posto/ graduação', computeQuantitativo([])) + quantSexoCardHtml('Por sexo, posto/ graduação', computeQuantitativoSexo([])) + veiculosCardHtml('Viaturas utilizadas', computeVeiculos([])) + equipesPostosCardHtml('Equipes e Postos de serviço', computeEquipesPostos([]));
     } else {
-      bodyHtml = groupNames.map(name => quantCardHtml(name, computeQuantitativo(groups[name])) + veiculosCardHtml(`Viaturas — ${name}`, computeVeiculos(groups[name])) + equipesPostosCardHtml(`Equipes/ Postos — ${name}`, computeEquipesPostos(groups[name]))).join('');
+      bodyHtml = groupNames.map(name => quantCardHtml(name, computeQuantitativo(groups[name])) + quantSexoCardHtml(`Por sexo, posto/ graduação — ${name}`, computeQuantitativoSexo(groups[name])) + veiculosCardHtml(`Viaturas — ${name}`, computeVeiculos(groups[name])) + equipesPostosCardHtml(`Equipes/ Postos — ${name}`, computeEquipesPostos(groups[name]))).join('');
       if(groupNames.length > 1){
         bodyHtml += quantCardHtml('Total geral (todos os eventos)', computeQuantitativo(visible));
+        bodyHtml += quantSexoCardHtml('Por sexo, posto/ graduação — Total geral (todos os eventos)', computeQuantitativoSexo(visible));
         bodyHtml += veiculosCardHtml('Viaturas — Total geral (todos os eventos)', computeVeiculos(visible));
         bodyHtml += equipesPostosCardHtml('Equipes/ Postos — Total geral (todos os eventos)', computeEquipesPostos(visible));
       }
     }
   } else {
     bodyHtml = quantCardHtml('Por posto/ graduação', computeQuantitativo(visible));
+    bodyHtml += quantSexoCardHtml('Por sexo, posto/ graduação', computeQuantitativoSexo(visible));
     bodyHtml += veiculosCardHtml('Viaturas utilizadas', computeVeiculos(visible));
     bodyHtml += equipesPostosCardHtml('Equipes e Postos de serviço', computeEquipesPostos(visible));
   }
