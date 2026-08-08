@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>CADASTRO DE EFETIVO - 9ª CIPM</title>
-<meta name="app-version" content="2026-08-08.1" />
+<meta name="app-version" content="2026-08-08.2" />
 
 <link rel="manifest" href="manifest.json" />
 <meta name="theme-color" content="#12161B" />
@@ -156,6 +156,8 @@ let linkButtonsConfig = {
 };
 let configExtrasDraft = [];
 let userListViewConfig = { reduzido: false }; // admin libera (ou não) que Reduzido veja a lista completa de usuários
+let reportsViewConfig = { geral: true }; // admin liga/desliga o acesso do nível Geral aos relatórios de serviços
+let equipesAtivasExpanded = new Set(); // chaves "data|id" dos cards expandidos na aba Equipes Ativas
 let efetivoRowsEvento = [];
 let quantType = 'daily'; // 'daily' | 'evento'
 let quantDate = todayISO();
@@ -240,6 +242,7 @@ async function loadAll(){
   await loadWhatsappShareConfig();
   await loadLinkButtonsConfig();
   await loadUserListViewConfig();
+  await loadReportsViewConfig();
   renderHeader();
   resetNewForm();
   switchTab('painel');
@@ -328,6 +331,16 @@ async function loadUserListViewConfig(){
 }
 async function persistUserListViewConfig(){
   await saveKey('user-list-view-config', userListViewConfig);
+}
+
+async function loadReportsViewConfig(){
+  try{
+    const r = await storageGet('reports-view-config');
+    reportsViewConfig = (r && r.value) ? JSON.parse(r.value) : { geral: true };
+  }catch(e){ reportsViewConfig = { geral: true }; }
+}
+async function persistReportsViewConfig(){
+  await saveKey('reports-view-config', reportsViewConfig);
 }
 
 async function persistEditLockHour(){
@@ -622,7 +635,7 @@ async function toggleAtivo(id){
 let equipesAtivasCache = [];
 
 async function renderEquipesAtivasView(){
-  if(!canToggleAtivo()){
+  if(!canViewEquipesAtivas()){
     document.getElementById('viewAtivas').innerHTML = `<div class="empty">Você não tem permissão para ver esta aba.</div>`;
     return;
   }
@@ -638,32 +651,72 @@ async function renderEquipesAtivasView(){
     }catch(e){}
   }
   equipesAtivasCache = itens;
+  currentConflictKeys = {};
+  currentVehicleConflictKeys = {};
+  renderEquipesAtivasBody();
+}
+
+function equipeKey(date, id){ return date + '|' + id; }
+
+function toggleEquipeExpand(date, id){
+  const key = equipeKey(date, id);
+  if(equipesAtivasExpanded.has(key)) equipesAtivasExpanded.delete(key);
+  else equipesAtivasExpanded.add(key);
+  renderEquipesAtivasBody();
+}
+
+function toggleAllEquipesExpand(){
+  const allKeys = equipesAtivasCache.map(({ date, launch }) => equipeKey(date, launch.id));
+  const allExpanded = allKeys.length > 0 && allKeys.every(k => equipesAtivasExpanded.has(k));
+  if(allExpanded){
+    allKeys.forEach(k => equipesAtivasExpanded.delete(k));
+  } else {
+    allKeys.forEach(k => equipesAtivasExpanded.add(k));
+  }
   renderEquipesAtivasBody();
 }
 
 function renderEquipesAtivasBody(){
   const itens = [...equipesAtivasCache].sort((a, b) => a.launch.createdAt - b.launch.createdAt);
+  const allKeys = itens.map(({ date, launch }) => equipeKey(date, launch.id));
+  const allExpanded = allKeys.length > 0 && allKeys.every(k => equipesAtivasExpanded.has(k));
 
   const html = itens.length === 0
     ? `<div class="empty">Nenhuma equipe/posto ativo no momento.</div>`
     : itens.map(({ date, launch: l }) => {
+        const key = equipeKey(date, l.id);
+        const expanded = equipesAtivasExpanded.has(key);
         const w = computeServiceWindow(l);
         const atrasada = new Date() > w.activeUntil;
         const headerLine = [l.evento, l.gt, l.cidade, l.codigo].filter(Boolean).join(' - ');
+        const statusBtn = canToggleAtivo()
+          ? `<button class="btn btn-block" style="margin-top:10px; background:#1f3d2e; border:1px solid #2f5c44; color:#7fd99a;" onclick="toggleAtivoEquipes('${date}','${l.id}')">
+              🟢 Ativa — toque para encerrar
+            </button>`
+          : `<div class="btn btn-block" style="margin-top:10px; background:#1f3d2e; border:1px solid #2f5c44; color:#7fd99a; text-align:center; cursor:default;">
+              🟢 Ativa
+            </div>`;
         return `
           <div class="card">
             <div class="muted">${fmtDateBR(date)} · ${l.inicio}–${l.fim}${atrasada ? ' · <span style="color:var(--danger);">⏰ passou da janela prevista</span>' : ''}</div>
             <div style="color:var(--text); font-family:'Inter',sans-serif; font-size:14px; font-weight:500; margin-top:4px;">${headerLine || '(sem cabeçalho)'}</div>
             <div class="muted" style="margin-top:4px;">${l.efetivo.length} policial(is)${l.viatura && l.viatura.placa ? ' · Viatura: ' + l.viatura.placa : ''}</div>
-            <button class="btn btn-block" style="margin-top:10px; background:#1f3d2e; border:1px solid #2f5c44; color:#7fd99a;" onclick="toggleAtivoEquipes('${date}','${l.id}')">
-              🟢 Ativa — toque para encerrar
+            <button class="btn btn-ghost btn-block" style="margin-top:10px;" onclick="toggleEquipeExpand('${date}','${l.id}')">
+              ${expanded ? '▲ Recolher detalhes' : '▼ Expandir detalhes'}
             </button>
+            ${expanded ? `<div class="launch-preview">${buildLaunchPreview(l)}</div>` : ''}
+            ${statusBtn}
           </div>
         `;
       }).join('');
 
   document.getElementById('viewAtivas').innerHTML = `
     <div class="section-title">Equipes/ Postos possivelmente ativos (hoje e ontem)</div>
+    ${itens.length > 0 ? `
+      <button class="btn btn-ghost btn-block" style="margin-bottom:14px;" onclick="toggleAllEquipesExpand()">
+        ${allExpanded ? '▲ Recolher todos' : '▼ Expandir todos'}
+      </button>
+    ` : ''}
     ${html}
   `;
 }
@@ -914,6 +967,11 @@ function openConfigModal(){
           <input type="checkbox" id="cfgUserListReduzido" style="width:auto; margin:0;" ${userListViewConfig.reduzido ? 'checked' : ''} /> Permitir que nível Reduzido veja a lista completa de usuários
         </label>
 
+        <label>Relatórios de serviços</label>
+        <label style="display:flex; align-items:center; gap:8px; text-transform:none; letter-spacing:0; margin-bottom:16px;">
+          <input type="checkbox" id="cfgReportsGeral" style="width:auto; margin:0;" ${reportsViewConfig.geral ? 'checked' : ''} /> Permitir que nível Geral veja Relatório de serviços diários e de Evento/Operação
+        </label>
+
         <label>Botão GCOI</label>
         <label style="display:flex; align-items:center; gap:8px; text-transform:none; letter-spacing:0; margin-bottom:8px;">
           <input type="checkbox" id="cfgGcoiEnabled" style="width:auto; margin:0;" ${linkButtonsConfig.gcoi.enabled ? 'checked' : ''} /> Ativar botão GCOI
@@ -992,11 +1050,15 @@ async function saveConfigModal(){
   userListViewConfig = {
     reduzido: document.getElementById('cfgUserListReduzido').checked
   };
+  reportsViewConfig = {
+    geral: document.getElementById('cfgReportsGeral').checked
+  };
   await persistEditLockHour();
   await persistActiveWindowHours();
   await persistWhatsappShareConfig();
   await persistLinkButtonsConfig();
   await persistUserListViewConfig();
+  await persistReportsViewConfig();
   closeConfigModal();
   renderActiveListView();
 }
@@ -1228,11 +1290,11 @@ function renderPainel(){
   const items = [
     { t:'new', icon:'📋', label:TAB_LABELS.new, show:true },
     { t:'newEvento', icon:'🏁', label:TAB_LABELS.newEvento, show:true },
-    { t:'day', icon:'📄', label:TAB_LABELS.day, show:true },
-    { t:'dayEvento', icon:'📑', label:TAB_LABELS.dayEvento, show:true },
+    { t:'day', icon:'📄', label:TAB_LABELS.day, show:canViewReports() },
+    { t:'dayEvento', icon:'📑', label:TAB_LABELS.dayEvento, show:canViewReports() },
     { t:'quant', icon:'📊', label:TAB_LABELS.quant, show:true },
     { t:'busca', icon:'🔎', label:TAB_LABELS.busca, show:true },
-    { t:'ativas', icon:'🟢', label:TAB_LABELS.ativas, show:canToggleAtivo() },
+    { t:'ativas', icon:'🟢', label:TAB_LABELS.ativas, show:canViewEquipesAtivas() },
     { t:'notificacoes', icon:'🔔', label:TAB_LABELS.notificacoes, show:canSeeNotifications(), badge:naoLidas },
     { t:'usuarios', icon:'👥', label:TAB_LABELS.usuarios, show:canManageUsers() },
     { t:'auditoria', icon:'🕵️', label:TAB_LABELS.auditoria, show:isAdmin() },
@@ -2354,7 +2416,7 @@ async function changeDate(v){
   renderDayView();
 }
 
-function launchCard(l){
+function buildLaunchPreview(l){
   const armadoTxt = (v) => v.armadoCartao ? ` · Armado c/ cartão: ${v.armadoCartao === 'sim' ? 'Sim' : 'Não'}` : '';
   const placaEmConflito = (placa) => !!currentVehicleConflictKeys[(placa || '').trim().toUpperCase()];
   const efetivoTxt = l.efetivo.map(p => {
@@ -2378,7 +2440,11 @@ function launchCard(l){
         ? `\n\n<span style="background:var(--danger); color:#fff; padding:1px 6px; border-radius:4px;">⚠️ VIATURA: ${l.viatura.modelo || '-'}\nKM: ${l.viatura.km || '-'}\nPAT: ${l.viatura.pat || '-'}\nPLACA: ${l.viatura.placa || '-'}${l.viatura.armadoCartao ? `\nArmado com o cartão: ${l.viatura.armadoCartao === 'sim' ? 'Sim' : 'Não'}` : ''}</span>`
         : `\n\nVIATURA: ${l.viatura.modelo || '-'}\nKM: ${l.viatura.km || '-'}\nPAT: ${l.viatura.pat || '-'}\nPLACA: ${l.viatura.placa || '-'}${l.viatura.armadoCartao ? `\nArmado com o cartão: ${l.viatura.armadoCartao === 'sim' ? 'Sim' : 'Não'}` : ''}`)
     : '';
-  const preview = `${headerLine}\n\n📆 Data: ${fmtDatePT(l.date)}\n⏰ Horário: ${l.inicio} às ${l.fim}\n\nEFETIVO:\n\n${efetivoTxt}${viaturaTxt}`;
+  return `${headerLine}\n\n📆 Data: ${fmtDatePT(l.date)}\n⏰ Horário: ${l.inicio} às ${l.fim}\n\nEFETIVO:\n\n${efetivoTxt}${viaturaTxt}`;
+}
+
+function launchCard(l){
+  const preview = buildLaunchPreview(l);
   const editable = isLaunchEditable(l);
   const efetivoAtivo = isLaunchAtivoEfetivo(l);
   const statusChip = canToggleAtivo()
@@ -3056,6 +3122,8 @@ function canEditComando(){ return isAdmin() || isReduzido(); }
 function canChangeLockHour(){ return isAdmin(); }
 function canManageUsers(){ return isAdmin() || isReduzido(); }
 function canViewUserList(){ return isAdmin() || (isReduzido() && !!userListViewConfig.reduzido); }
+function canViewReports(){ return isAdmin() || isReduzido() || (isGeral() && !!reportsViewConfig.geral); }
+function canViewEquipesAtivas(){ return isAdmin() || isReduzido() || isGeral(); }
 function canToggleAtivo(){ return isAdmin() || isReduzido(); }
 function canShareWhatsApp(){
   if(isAdmin()) return true;
