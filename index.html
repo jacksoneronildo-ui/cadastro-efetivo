@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>CADASTRO DE EFETIVO - 9ª CIPM</title>
+<meta name="app-version" content="2026-08-08.1" />
 
 <link rel="manifest" href="manifest.json" />
 <meta name="theme-color" content="#12161B" />
@@ -1181,10 +1182,25 @@ function setViewAsLevel(lvl){
   renderHeader();
 }
 
+const TAB_LABELS = {
+  new: 'Lançamento diário',
+  newEvento: 'Lan. em Evento/ Operação',
+  day: 'Relatório de serviços diários',
+  dayEvento: 'Relatório de Evento/ Operação',
+  quant: 'Quantitativo de Lançamentos',
+  busca: 'Buscar Policial',
+  ativas: 'Equipes Ativas',
+  notificacoes: 'Notificações',
+  usuarios: 'Usuários',
+  auditoria: 'Auditoria'
+};
+
 function switchTab(t){
   currentTab = t;
   document.getElementById('viewPainel').classList.toggle('hidden', t !== 'painel');
   document.getElementById('backBar').classList.toggle('hidden', t === 'painel');
+  const backBarLabel = document.querySelector('#backBar span');
+  if(backBarLabel) backBarLabel.textContent = `← ${TAB_LABELS[t] || 'Painel'}`;
   document.getElementById('viewNew').classList.toggle('hidden', t!=='new');
   document.getElementById('viewNewEvento').classList.toggle('hidden', t!=='newEvento');
   document.getElementById('viewDay').classList.toggle('hidden', t!=='day');
@@ -1210,16 +1226,16 @@ function switchTab(t){
 function renderPainel(){
   const naoLidas = unreadNotifCount();
   const items = [
-    { t:'new', icon:'📋', label:'Lançamento diário', show:true },
-    { t:'newEvento', icon:'🏁', label:'Lan. em Evento/ Operação', show:true },
-    { t:'day', icon:'📄', label:'Relatório de serviços diários', show:true },
-    { t:'dayEvento', icon:'📑', label:'Relatório de Evento/ Operação', show:true },
-    { t:'quant', icon:'📊', label:'Quantitativo de Lançamentos', show:true },
-    { t:'busca', icon:'🔎', label:'Buscar Policial', show:true },
-    { t:'ativas', icon:'🟢', label:'Equipes Ativas', show:canToggleAtivo() },
-    { t:'notificacoes', icon:'🔔', label:'Notificações', show:canSeeNotifications(), badge:naoLidas },
-    { t:'usuarios', icon:'👥', label:'Usuários', show:canManageUsers() },
-    { t:'auditoria', icon:'🕵️', label:'Auditoria', show:isAdmin() },
+    { t:'new', icon:'📋', label:TAB_LABELS.new, show:true },
+    { t:'newEvento', icon:'🏁', label:TAB_LABELS.newEvento, show:true },
+    { t:'day', icon:'📄', label:TAB_LABELS.day, show:true },
+    { t:'dayEvento', icon:'📑', label:TAB_LABELS.dayEvento, show:true },
+    { t:'quant', icon:'📊', label:TAB_LABELS.quant, show:true },
+    { t:'busca', icon:'🔎', label:TAB_LABELS.busca, show:true },
+    { t:'ativas', icon:'🟢', label:TAB_LABELS.ativas, show:canToggleAtivo() },
+    { t:'notificacoes', icon:'🔔', label:TAB_LABELS.notificacoes, show:canSeeNotifications(), badge:naoLidas },
+    { t:'usuarios', icon:'👥', label:TAB_LABELS.usuarios, show:canManageUsers() },
+    { t:'auditoria', icon:'🕵️', label:TAB_LABELS.auditoria, show:isAdmin() },
   ];
   document.getElementById('viewPainel').innerHTML = `
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
@@ -2458,7 +2474,8 @@ function shareWhatsApp(id){
     ? `\n\nVIATURA: ${gv.modelo || '-'}\nKM: ${gv.km || '-'}\nPAT: ${gv.pat || '-'}\nPLACA.: ${gv.placa || '-'}`
     : '';
 
-  const texto = `🚨 CADASTRO DE EFETIVO 🚨\n\n${headerLine}\n\n📆 Data: ${fmtDatePT(l.date)}\n⏰ horário: ${l.inicio} às ${l.fim}\n\nEFETIVO:\n\n${efetivoTxt}${viaturaTxt}\n\nGCOI: ${l.gcoi ? '✅' : '❌'}\n\nCMD: ${dc.comando || '-'}\nSUBCMD: ${dc.subcomando || '-'}\n\n🌵 ${MOTTO}\n☀️`;
+  const alteracaoTag = l.edited ? `⚠️ ALTERAÇÃO DE CADASTRO ⚠️\n\n` : '';
+  const texto = `${alteracaoTag}🚨 CADASTRO DE EFETIVO 🚨\n\n${headerLine}\n\n📆 Data: ${fmtDatePT(l.date)}\n⏰ horário: ${l.inicio} às ${l.fim}\n\nEFETIVO:\n\n${efetivoTxt}${viaturaTxt}\n\nGCOI: ${l.gcoi ? '✅' : '❌'}\n\nCMD: ${dc.comando || '-'}\nSUBCMD: ${dc.subcomando || '-'}\n\n🌵 ${MOTTO}\n☀️`;
 
   window.open(`https://wa.me/?text=${encodeURIComponent(texto)}`, '_blank');
 }
@@ -3188,6 +3205,39 @@ auth.onAuthStateChanged((user) => {
     renderLoginScreen();
   }
 });
+
+// ---------- Aviso de nova versão disponível ----------
+const APP_VERSION = document.querySelector('meta[name="app-version"]').content;
+let updateBannerShown = false;
+
+async function checkForAppUpdate(){
+  if(updateBannerShown) return;
+  try{
+    const res = await fetch(location.pathname + '?_=' + Date.now(), { cache: 'no-store' });
+    const html = await res.text();
+    const m = html.match(/<meta name="app-version" content="([^"]+)"/);
+    if(m && m[1] && m[1] !== APP_VERSION){
+      showUpdateBanner();
+    }
+  }catch(e){}
+}
+
+function showUpdateBanner(){
+  if(updateBannerShown) return;
+  updateBannerShown = true;
+  const el = document.createElement('div');
+  el.id = 'updateBanner';
+  el.style = 'position:fixed; left:0; right:0; bottom:0; z-index:10000; background:var(--accent); color:#12161B; padding:12px 16px; display:flex; align-items:center; justify-content:space-between; gap:12px; font-family:"Inter",sans-serif; font-size:13px; box-shadow:0 -2px 10px rgba(0,0,0,.35);';
+  el.innerHTML = `
+    <span>🔄 Nova versão do app disponível.</span>
+    <button onclick="location.reload()" style="background:#12161B; color:var(--accent); border:none; border-radius:6px; padding:8px 14px; font-family:'Inter',sans-serif; font-weight:600; font-size:13px; cursor:pointer;">Atualizar agora</button>
+  `;
+  document.body.appendChild(el);
+}
+
+setInterval(checkForAppUpdate, 5 * 60 * 1000);
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') checkForAppUpdate(); });
+window.addEventListener('focus', checkForAppUpdate);
 </script>
 </body>
 </html>
