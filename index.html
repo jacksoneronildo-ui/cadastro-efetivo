@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>CADASTRO DE EFETIVO - 9ª CIPM</title>
-<meta name="app-version" content="2026-08-08.4" />
+<meta name="app-version" content="2026-08-08.5" />
 
 <link rel="manifest" href="manifest.json" />
 <meta name="theme-color" content="#12161B" />
@@ -497,14 +497,14 @@ async function checkNotifications(silent){
 
   const novas = [];
 
-  function processList(list, tipoLabel){
+  function processList(list, tipoLabel, launchTipo){
     list.forEach(l => {
       const headerLine = [l.evento, l.gt, l.cidade, l.codigo].filter(Boolean).join(' - ') || '(sem cabeçalho)';
       const createdKey = 'c:' + l.id;
       if(l.criadoPor && !notifSeenIds.has(createdKey)){
         notifSeenIds.add(createdKey);
         if(!silent){
-          novas.push({ id: uid(), tipo:'cadastro', mensagem: `Novo lançamento (${tipoLabel}): ${headerLine} — por ${l.criadoPor}`, quando: Date.now(), lida:false });
+          novas.push({ id: uid(), tipo:'cadastro', mensagem: `Novo lançamento (${tipoLabel}): ${headerLine} — por ${l.criadoPor}`, quando: Date.now(), lida:false, launchId: l.id, launchDate: l.date, launchTipo });
         }
       }
       if(l.edited && l.editedAt){
@@ -512,14 +512,14 @@ async function checkNotifications(silent){
         if(!notifSeenIds.has(editKey)){
           notifSeenIds.add(editKey);
           if(!silent){
-            novas.push({ id: uid(), tipo:'edicao', mensagem: `Lançamento editado (${tipoLabel}): ${headerLine} — por ${l.editadoPor || '-'}`, quando: Date.now(), lida:false });
+            novas.push({ id: uid(), tipo:'edicao', mensagem: `Lançamento editado (${tipoLabel}): ${headerLine} — por ${l.editadoPor || '-'}`, quando: Date.now(), lida:false, launchId: l.id, launchDate: l.date, launchTipo });
           }
         }
       }
     });
   }
-  processList(daily, 'Diário');
-  processList(evento, 'Evento/ Operação');
+  processList(daily, 'Diário', 'daily');
+  processList(evento, 'Evento/ Operação', 'evento');
 
   const conflitos = detectScheduleConflicts(daily.filter(l => !l.removed));
   Object.entries(conflitos).forEach(([key, nome]) => {
@@ -527,7 +527,7 @@ async function checkNotifications(silent){
     if(!notifSeenIds.has(conflictKey)){
       notifSeenIds.add(conflictKey);
       if(!silent){
-        novas.push({ id: uid(), tipo:'conflito', mensagem: `Conflito de horário: ${nome} está lançado(a) em mais de um serviço hoje`, quando: Date.now(), lida:false });
+        novas.push({ id: uid(), tipo:'conflito', mensagem: `Conflito de horário: ${nome} está lançado(a) em mais de um serviço hoje`, quando: Date.now(), lida:false, launchDate: hoje, launchTipo: 'daily' });
       }
     }
   });
@@ -538,7 +538,7 @@ async function checkNotifications(silent){
     if(!notifSeenIds.has(conflictKey)){
       notifSeenIds.add(conflictKey);
       if(!silent){
-        novas.push({ id: uid(), tipo:'conflito', mensagem: `Conflito de horário: viatura placa ${placa} está lançada em mais de um serviço hoje`, quando: Date.now(), lida:false });
+        novas.push({ id: uid(), tipo:'conflito', mensagem: `Conflito de horário: viatura placa ${placa} está lançada em mais de um serviço hoje`, quando: Date.now(), lida:false, launchDate: hoje, launchTipo: 'daily' });
       }
     }
   });
@@ -594,10 +594,11 @@ function renderNotificacoesView(){
       <button class="btn btn-ghost btn-block" style="margin-bottom:14px;" onclick="clearNotifications()">🗑️ Limpar notificações</button>
       ${notifications.map(n => {
         const s = notifStyle(n.tipo);
+        const clicavel = !!(n.launchDate && n.launchTipo);
         return `
-          <div style="background:${s.bg}; border:1px solid ${s.border}; color:${s.text}; border-radius:10px; padding:12px 14px; margin-bottom:10px; font-size:13px; font-family:'Inter',sans-serif;">
+          <div style="background:${s.bg}; border:1px solid ${s.border}; color:${s.text}; border-radius:10px; padding:12px 14px; margin-bottom:10px; font-size:13px; font-family:'Inter',sans-serif; ${clicavel ? 'cursor:pointer;' : ''}" ${clicavel ? `onclick="abrirNotificacao('${n.id}')"` : ''}>
             <div>${s.icon} ${n.mensagem}</div>
-            <div class="muted" style="margin-top:6px; font-size:11px;">${fmtWhen(n.quando)}</div>
+            <div class="muted" style="margin-top:6px; font-size:11px;">${fmtWhen(n.quando)}${clicavel ? ' · toque para abrir o cadastro' : ''}</div>
           </div>
         `;
       }).join('')}
@@ -612,6 +613,18 @@ function clearNotifications(){
   notifications = [];
   saveNotifState();
   renderNotificacoesView();
+}
+
+async function abrirNotificacao(id){
+  const n = notifications.find(x => x.id === id);
+  if(!n) return;
+  notifications = notifications.filter(x => x.id !== id);
+  saveNotifState();
+  if(!n.launchDate || !n.launchTipo){
+    renderNotificacoesView();
+    return;
+  }
+  await goToLaunchFromBusca(n.launchDate, n.launchTipo, n.launchId || null);
 }
 
 let currentConflictKeys = {};
@@ -2475,19 +2488,21 @@ async function runBusca(){
 }
 
 async function goToLaunchFromBusca(date, tipo, launchId){
-  document.getElementById('tabNew').classList.remove('active');
-  document.getElementById('tabNewEvento').classList.remove('active');
-  document.getElementById('tabQuant').classList.remove('active');
-  document.getElementById('tabBusca').classList.remove('active');
-  document.getElementById('tabDay').classList.toggle('active', tipo !== 'evento');
-  document.getElementById('tabDayEvento').classList.toggle('active', tipo === 'evento');
+  currentTab = tipo === 'evento' ? 'dayEvento' : 'day';
+  document.getElementById('viewPainel').classList.add('hidden');
+  document.getElementById('backBar').classList.remove('hidden');
+  const backBarLabel = document.querySelector('#backBar span');
+  if(backBarLabel) backBarLabel.textContent = `← ${TAB_LABELS[currentTab] || 'Painel'}`;
   document.getElementById('viewNew').classList.add('hidden');
   document.getElementById('viewNewEvento').classList.add('hidden');
   document.getElementById('viewQuant').classList.add('hidden');
   document.getElementById('viewBusca').classList.add('hidden');
+  document.getElementById('viewUsuarios').classList.add('hidden');
+  document.getElementById('viewAtivas').classList.add('hidden');
+  document.getElementById('viewAuditoria').classList.add('hidden');
+  document.getElementById('viewNotificacoes').classList.add('hidden');
   document.getElementById('viewDay').classList.toggle('hidden', tipo === 'evento');
   document.getElementById('viewDayEvento').classList.toggle('hidden', tipo !== 'evento');
-  currentTab = tipo === 'evento' ? 'dayEvento' : 'day';
 
   if(tipo === 'evento'){
     await loadEventoData(date);
@@ -2496,7 +2511,7 @@ async function goToLaunchFromBusca(date, tipo, launchId){
     await loadDateData(date);
     renderDayView();
   }
-  openEditLaunch(launchId);
+  if(launchId) openEditLaunch(launchId);
 }
 
 
